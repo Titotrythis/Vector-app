@@ -96,8 +96,15 @@
   .add-row input[type="text"]{flex:1;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:14px;background:var(--surface);}
   .add-row input:focus{outline:2px solid var(--progress);outline-offset:1px;}
   .due-input{border:1px solid var(--line);border-radius:8px;padding:9px 8px;font-size:12px;background:var(--surface);color:var(--ink-soft);width:124px;flex-shrink:0;}
-  @media (max-width:767px){ .add-row{flex-wrap:wrap;} .due-input{width:100%;} }
-  .cards{display:flex;flex-direction:column;gap:8px;flex:1;}
+  .due-picker-wrap{position:relative;}
+  .due-input.due-btn{cursor:pointer;text-align:left;}
+  .due-picker-dropdown{position:absolute;top:calc(100% + 6px);right:0;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:10px;box-shadow:var(--shadow-card);z-index:30;width:226px;}
+  .cal-header-mini{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:12.5px;font-weight:600;}
+  .due-picker-dropdown .cal-grid-flex{height:150px;}
+  .due-picker-dropdown .icon-btn{background:var(--surface-alt);}
+  .due-clear-btn{margin-top:8px;width:100%;border:none;background:var(--surface-alt);color:var(--ink-soft);font-size:11.5px;padding:6px;border-radius:7px;}
+  @media (max-width:767px){ .add-row{flex-wrap:wrap;position:relative;} .due-input{width:100%;} .due-picker-wrap{width:100%;} .due-picker-dropdown{right:0;left:0;width:auto;} }
+  .cards{display:flex;flex-direction:column;gap:8px;flex:1;max-height:560px;overflow-y:auto;}
   .card{background:var(--surface);border-radius:var(--radius);padding:11px 12px;box-shadow:var(--shadow-card);border-left:8px solid var(--pri-low);text-align:left;width:100%;}
   .card.done-card{opacity:0.72;}
   .card.suspended-card{opacity:0.85;}
@@ -160,7 +167,7 @@
   .bar-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
   .bar{width:100%;background:var(--progress);border-radius:4px 4px 2px 2px;min-height:2px;}
   .bar-col .blabel{font-size:10px;color:var(--ink-faint);margin-top:5px;}
-  .log-list{display:flex;flex-direction:column;gap:8px;margin-top:4px;}
+  .log-list{display:flex;flex-direction:column;gap:8px;margin-top:4px;max-height:520px;overflow-y:auto;}
   .log-item{background:var(--surface);border-radius:10px;padding:10px 12px;}
   .log-item-title{font-weight:600;font-size:13.5px;}
   .log-item-time{font-size:10.5px;color:var(--ink-faint);margin-top:2px;}
@@ -173,6 +180,8 @@
   .perf-seg.ontime{background:var(--pri-none);}
   .perf-seg.overdue{background:var(--danger);}
   .perf-legend{display:flex;gap:12px;font-size:10.5px;color:var(--ink-soft);flex-wrap:wrap;}
+  .perf-row-flex{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+  .perf-pct{font-family:'Fraunces';font-weight:600;font-size:16px;color:var(--ink);min-width:48px;text-align:right;flex-shrink:0;}
   .perf-legend span{display:flex;align-items:center;gap:5px;}
 
   .overlay{position:fixed;inset:0;background:rgba(35,32,26,0.42);display:flex;align-items:flex-end;justify-content:center;z-index:50;}
@@ -245,14 +254,28 @@
   @media (min-width:768px){ .dash-wrap{padding-bottom:36px;} }
 
   .loading{display:flex;align-items:center;justify-content:center;height:60vh;color:var(--ink-faint);font-size:14px;}
+  .auth-error{color:var(--danger);font-size:12.5px;margin-top:10px;text-align:center;}
+  .auth-input{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px;margin-bottom:8px;background:var(--surface);}
+  .filter-toggle{display:flex;gap:4px;background:var(--bg-deep);padding:4px;border-radius:999px;}
+  .filter-toggle button{border:none;background:transparent;padding:6px 12px;border-radius:999px;font-size:12.5px;font-weight:600;color:var(--ink-soft);}
+  .filter-toggle button.active{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-card);}
+  .error-banner{background:var(--danger);color:#fff;padding:9px 16px;font-size:12.5px;display:flex;justify-content:space-between;align-items:center;gap:10px;}
+  .error-banner .icon-btn{background:rgba(255,255,255,0.25);flex-shrink:0;}
+  .error-banner .icon-btn svg{stroke:#fff;}
 </style>
 </head>
 <body>
 <div id="app"><div class="loading">Loading your board…</div></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 (function(){
   "use strict";
+
+  /* ---------------- Supabase project config ---------------- */
+  const SUPABASE_URL = 'https://scynlvlzswcdfuobjyew.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_8ozhRd9ihV6FzAkhver16g_lwSCbRQd';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   const ICONS = {
     flame: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-3 4-3 8a3 3 0 006 0c1 1 2 2.5 2 4.5A5 5 0 0112 19a6 6 0 01-6-6c0-4 3-5 3-9 1 1 1.5 2 1.5 3.5C11 6 11 4 12 2z"/></svg>`,
@@ -269,7 +292,7 @@
   const POMODORO_SEC = 25*60;
   const PRIORITIES = ['urgent','veryhigh','high','low'];
 
-  let state = { tasks: [], activity: {}, auditLog: [], trash: [], users: [], currentUserId: null };
+  let state = { tasks: [], trash: [], auditLog: [], profiles: [] };
   let view = "board";
   let mobileCol = "todo";
   let selectedDay = todayStr();
@@ -278,14 +301,30 @@
   let openTaskId = null;
   let pendingAction = null;
   let selectedSummaryDay = null;
-  let saveTimer = null;
   let tickHandle = null;
   let focusSubtaskInput = false;
   let futurePickerOpen = false;
   let futurePickerMonth = new Date();
-  let pendingImportData = null;
-  let importError = null;
   let editingSubtaskKey = null;
+  let addTaskDueDate = null;
+  let addDueMonth = new Date();
+  let dueDropdownOpen = false;
+  let keepDueOpen = false;
+  let taskFilter = 'all';
+  let appError = null;
+
+  /* ---------------- Auth state ---------------- */
+  let sbSession = null;
+  let authView = 'loading'; // loading | signin | set-password | app
+  let authEmail = '';
+  let authPassword = '';
+  let authError = null;
+  let authNotice = null;
+  let authBusy = false;
+  let forgotMode = false;
+  let newPassword1 = '';
+  let newPassword2 = '';
+  const isInviteOrRecoveryFlow = /type=invite|type=recovery/.test(window.location.hash);
 
   function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
   function todayStr(){ return dateToStr(new Date()); }
@@ -304,106 +343,158 @@
     else sub = d.getFullYear() !== new Date().getFullYear() ? String(d.getFullYear()) : "";
     return {label, sub};
   }
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function escapeAttr(s){ return escapeHtml(s); }
 
-  /* ---------------- Persistence ---------------- */
-  const STORAGE_KEY = 'vector-data';
-  function migrateState(){
-    if(!Array.isArray(state.auditLog)) state.auditLog = [];
-    if(!state.activity) state.activity = {};
-    if(!Array.isArray(state.trash)) state.trash = [];
-    if(!Array.isArray(state.users)) state.users = [];
-    if(state.currentUserId===undefined) state.currentUserId = null;
-    state.tasks.forEach(t=>{
-      if(!t.timer) t.timer = {elapsed:0, running:false, startedAt:null};
-      if(!t.priority) t.priority = 'low';
-      if(t.dueDate===undefined) t.dueDate = null;
-      if(t.createdBy===undefined) t.createdBy = null;
-      if(t.suspendedMs===undefined) t.suspendedMs = 0;
-      if(t.suspendStartedAt===undefined) t.suspendStartedAt = null;
-    });
+  /* ---------------- Users / real auth ---------------- */
+  function initialsFor(name){ return (name||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
+  function currentUserId(){ return sbSession && sbSession.user ? sbSession.user.id : null; }
+  function profileName(userId){
+    if(!userId) return 'Unknown';
+    const p = state.profiles.find(p=>p.id===userId);
+    return p ? p.display_name : 'Unknown';
   }
-  function loadState(){
-    try{
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if(raw){
-        const parsed = JSON.parse(raw);
-        if(parsed && Array.isArray(parsed.tasks)) state = parsed;
-      }
-    }catch(e){ console.warn('No saved data yet, or storage unavailable', e); }
-    migrateState();
+  function currentUserName(){ return profileName(currentUserId()); }
+
+  async function submitSignIn(){
+    authError = null; authNotice = null; authBusy = true; render();
+    const { error } = await sb.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword });
+    authBusy = false;
+    if(error){ authError = error.message; render(); return; }
+    authPassword = '';
+  }
+  async function submitForgotPassword(){
+    authError = null; authNotice = null; authBusy = true; render();
+    const { error } = await sb.auth.resetPasswordForEmail(authEmail.trim(), { redirectTo: window.location.origin + window.location.pathname });
+    authBusy = false;
+    if(error){ authError = error.message; render(); return; }
+    authNotice = 'Check your email for a reset link.';
     render();
   }
-  function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveState, 200); }
-  function saveState(){
-    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-    catch(e){ console.error('Save failed — your browser may be blocking local storage', e); }
+  async function submitSetPassword(){
+    authError = null;
+    if(newPassword1.length < 6){ authError = 'Password must be at least 6 characters.'; render(); return; }
+    if(newPassword1 !== newPassword2){ authError = "Passwords don't match."; render(); return; }
+    authBusy = true; render();
+    const { error } = await sb.auth.updateUser({ password: newPassword1 });
+    authBusy = false;
+    if(error){ authError = error.message; render(); return; }
+    history.replaceState(null, '', window.location.pathname);
+    newPassword1 = ''; newPassword2 = '';
+    authView = 'app';
+    await reloadAllData();
+    setupRealtime();
+  }
+  async function logout(){
+    teardownRealtime();
+    await sb.auth.signOut();
+    authView = 'signin';
+    render();
   }
 
-  async function exportData(){
-    const payload = JSON.stringify(state, null, 2);
-    const filename = 'vector-export-' + todayStr() + '.json';
-    if(window.claude && typeof window.claude.use === 'function'){
-      try{
-        const downloads = await window.claude.use('downloads');
-        if(downloads){
-          await downloads.save({filename, data: payload});
-          return;
-        }
-      }catch(e){
-        if(e && e.code === 'declined') return;
-      }
-    }
-    try{
-      const blob = new Blob([payload], {type:'application/json'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }catch(e){ console.error('Export failed', e); }
-  }
-
-  function handleImportFile(file){
-    importError = null;
-    const reader = new FileReader();
-    reader.onload = ()=>{
-      try{
-        const parsed = JSON.parse(reader.result);
-        if(!parsed || !Array.isArray(parsed.tasks)) throw new Error('bad shape');
-        pendingImportData = parsed;
-      }catch(err){
-        importError = 'Could not read that file — make sure it\'s a Vector export.';
-      }
+  async function handleAuthChange(){
+    if(sbSession && isInviteOrRecoveryFlow){
+      authView = 'set-password';
       render();
+      return;
+    }
+    if(sbSession){
+      authView = 'app';
+      await reloadAllData();
+      setupRealtime();
+    } else {
+      teardownRealtime();
+      authView = 'signin';
+      render();
+    }
+  }
+  async function bootstrapAuth(){
+    const { data } = await sb.auth.getSession();
+    sbSession = data.session;
+    sb.auth.onAuthStateChange((_event, session)=>{
+      sbSession = session;
+      handleAuthChange();
+    });
+    await handleAuthChange();
+  }
+
+  /* ---------------- Data loading (Supabase) ---------------- */
+  function taskFromRow(row){
+    return {
+      id: row.id,
+      title: row.title,
+      day: row.day,
+      status: row.status,
+      notes: row.notes || '',
+      subtasks: (row.subtasks||[]).slice()
+        .sort((a,b)=>(a.position||0)-(b.position||0))
+        .sort((a,b)=>(a.done?1:0)-(b.done?1:0))
+        .map(s=>({id:s.id, text:s.text, done:s.done})),
+      priority: row.priority || 'low',
+      dueDate: row.due_date,
+      createdBy: profileName(row.created_by),
+      createdByUserId: row.created_by,
+      timer: { elapsed: Number(row.timer_elapsed_ms)||0, running: !!row.timer_running, startedAt: row.timer_started_at ? new Date(row.timer_started_at).getTime() : null },
+      suspendedMs: Number(row.suspended_ms)||0,
+      suspendStartedAt: row.suspend_started_at ? new Date(row.suspend_started_at).getTime() : null,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+      deletedAt: row.deleted_at,
+      deletedBy: profileName(row.deleted_by),
+      deleteReason: row.delete_reason,
     };
-    reader.onerror = ()=>{ importError = 'Could not read that file.'; render(); };
-    reader.readAsText(file);
   }
-  function confirmImport(){
-    if(!pendingImportData) return;
-    state = pendingImportData;
-    migrateState();
-    pendingImportData = null; importError = null;
-    scheduleSave(); render();
+  function auditFromRow(row){
+    return { id: row.id, taskId: row.task_id, taskTitle: row.task_title, action: row.action, reason: row.reason, userId: row.user_id, username: profileName(row.user_id), timestamp: row.created_at };
   }
 
-  function recordActivity(){ state.activity[todayStr()] = (state.activity[todayStr()]||0) + 1; }
+  let reloadInFlight = null;
+  async function reloadAllData(){
+    if(reloadInFlight) return reloadInFlight;
+    reloadInFlight = (async ()=>{
+      const [profilesRes, tasksRes, auditRes] = await Promise.all([
+        sb.from('profiles').select('*'),
+        sb.from('tasks').select('*, subtasks(*)').order('created_at', {ascending:true}),
+        sb.from('audit_log').select('*').order('created_at', {ascending:true}),
+      ]);
+      const err = profilesRes.error || tasksRes.error || auditRes.error;
+      if(err){ appError = err.message; render(); reloadInFlight = null; return; }
+      state.profiles = profilesRes.data || [];
+      const taskRows = tasksRes.data || [];
+      state.tasks = taskRows.filter(r=>!r.deleted).map(taskFromRow);
+      state.trash = taskRows.filter(r=>r.deleted).map(taskFromRow);
+      state.auditLog = (auditRes.data || []).map(auditFromRow);
+      render();
+      reloadInFlight = null;
+    })();
+    return reloadInFlight;
+  }
 
-  /* ---------------- Users / mock login ---------------- */
-  function initialsFor(name){
-    return (name||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase();
+  let realtimeChannel = null;
+  let reloadTimer = null;
+  function scheduleReload(){ clearTimeout(reloadTimer); reloadTimer = setTimeout(reloadAllData, 200); }
+  function setupRealtime(){
+    if(realtimeChannel) return;
+    realtimeChannel = sb.channel('vector-sync')
+      .on('postgres_changes', {event:'*', schema:'public', table:'tasks'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'subtasks'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'audit_log'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'profiles'}, scheduleReload)
+      .subscribe();
   }
-  function currentUser(){ return state.users.find(u=>u.id===state.currentUserId) || null; }
-  function currentUserName(){ const u=currentUser(); return u ? u.name : 'Unknown'; }
-  function addUser(name){
-    name = (name||'').trim(); if(!name) return;
-    let user = state.users.find(u=>u.name.toLowerCase()===name.toLowerCase());
-    if(!user){ user = {id: uid(), name}; state.users.push(user); }
-    state.currentUserId = user.id;
-    scheduleSave(); render();
+  function teardownRealtime(){
+    if(realtimeChannel){ sb.removeChannel(realtimeChannel); realtimeChannel = null; }
   }
-  function selectUser(id){ state.currentUserId = id; scheduleSave(); render(); }
-  function logout(){ state.currentUserId = null; scheduleSave(); render(); }
+
+  async function runMutation(promiseFn){
+    try{
+      const { error } = await promiseFn();
+      if(error){ appError = error.message; render(); return false; }
+    }catch(e){ appError = (e && e.message) || 'Something went wrong.'; render(); return false; }
+    appError = null;
+    await reloadAllData();
+    return true;
+  }
 
   /* ---------------- Timer helpers ---------------- */
   function computeElapsed(t){
@@ -416,19 +507,10 @@
     const h = Math.floor(totalSec/3600), m = Math.floor((totalSec%3600)/60), s = totalSec%60;
     return (h>0? String(h).padStart(2,'0')+':':'') + String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
   }
-  function startTimer(t){ t.timer.running=true; t.timer.startedAt=Date.now(); }
-  function pauseTimer(t){
-    if(t.timer.running){ t.timer.elapsed += (Date.now()-t.timer.startedAt); t.timer.running=false; t.timer.startedAt=null; }
-  }
-
-  /* ---------------- Suspended-duration helpers ---------------- */
   function computeSuspendedElapsed(t){
     let ms = t.suspendedMs||0;
     if(t.status==='suspended' && t.suspendStartedAt) ms += (Date.now()-t.suspendStartedAt);
     return ms;
-  }
-  function commitSuspendedTime(t){
-    if(t.suspendStartedAt){ t.suspendedMs = (t.suspendedMs||0) + (Date.now()-t.suspendStartedAt); t.suspendStartedAt=null; }
   }
   function formatDuration(ms){
     const totalSec = Math.floor(ms/1000);
@@ -453,121 +535,143 @@
   function priorityRank(p){ return p==='urgent'?4: p==='veryhigh'?3: p==='high'?2: 1; }
   function sortByPriority(list){ return list.slice().sort((a,b)=>priorityRank(b.priority)-priorityRank(a.priority)); }
 
-  /* ---------------- Task ops ---------------- */
-  function createTask(title, day, dueDate){
-    title = title.trim(); if(!title) return;
-    state.tasks.push({ id: uid(), title, day, status:'todo', notes:'', subtasks: [], priority:'low',
-      dueDate: dueDate || null, createdBy: currentUserName(),
-      timer:{elapsed:0, running:false, startedAt:null},
-      suspendedMs:0, suspendStartedAt:null,
-      createdAt: new Date().toISOString(), completedAt: null });
-    recordActivity(); scheduleSave(); render();
-  }
+  /* ---------------- Task ops (Supabase-backed) ---------------- */
   function getTask(id){ return state.tasks.find(t=>t.id===id); }
-  function beginWork(id){
+
+  async function createTask(title, day, dueDate){
+    title = (title||'').trim(); if(!title) return;
+    await runMutation(()=> sb.from('tasks').insert({ title, day, status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId() }));
+  }
+  async function beginWork(id){
     const t = getTask(id); if(!t || t.status!=='todo') return;
-    t.status='progress'; startTimer(t);
-    recordActivity(); scheduleSave(); render();
+    await runMutation(()=> sb.from('tasks').update({ status:'progress', timer_running:true, timer_started_at:new Date().toISOString() }).eq('id', id));
   }
-  function markDoneManually(id){
+  async function markDoneManually(id){
     const t = getTask(id); if(!t || t.status==='done') return;
-    t.status='done'; t.completedAt = new Date().toISOString(); pauseTimer(t);
-    recordActivity(); scheduleSave();
+    const elapsed = computeElapsed(t);
     if(openTaskId===id) openTaskId=null;
-    render();
+    await runMutation(()=> sb.from('tasks').update({ status:'done', completed_at:new Date().toISOString(), timer_running:false, timer_started_at:null, timer_elapsed_ms:elapsed }).eq('id', id));
   }
-  function setPriority(id, p){
+  async function setPriority(id, p){
+    await runMutation(()=> sb.from('tasks').update({priority:p}).eq('id', id));
+  }
+  async function deleteTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
-    t.priority = p; scheduleSave(); render();
+    const elapsedFinal = computeElapsed(t);
+    const suspendedMsFinal = t.status==='suspended' ? computeSuspendedElapsed(t) : t.suspendedMs;
+    const { error: updErr } = await sb.from('tasks').update({
+      deleted:true, deleted_at:new Date().toISOString(), deleted_by: currentUserId(), delete_reason: reason,
+      timer_running:false, timer_started_at:null, timer_elapsed_ms: elapsedFinal,
+      suspended_ms: suspendedMsFinal, suspend_started_at:null,
+    }).eq('id', id);
+    if(updErr){ appError=updErr.message; render(); return; }
+    await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'delete', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
-  function logAction(taskId, taskTitle, action, reason, username){
-    state.auditLog.push({ id: uid(), taskId, taskTitle, action, reason, username, timestamp: new Date().toISOString() });
+  async function restoreTaskWithLog(id, reason, username){
+    const t = state.trash.find(x=>x.id===id); if(!t) return;
+    const { error: updErr } = await sb.from('tasks').update({
+      deleted:false, deleted_at:null, deleted_by:null, delete_reason:null,
+      status:'todo', completed_at:null, timer_running:false, timer_started_at:null,
+    }).eq('id', id);
+    if(updErr){ appError=updErr.message; render(); return; }
+    await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'restore', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
-  function deleteTaskWithLog(id, reason, username){
-    const t = getTask(id);
-    if(t){
-      commitSuspendedTime(t);
-      pauseTimer(t);
-      logAction(id, t.title, 'delete', reason, username);
-      state.trash.push(Object.assign({}, t, {deletedAt: new Date().toISOString(), deletedBy: username, deleteReason: reason}));
-    }
-    state.tasks = state.tasks.filter(x=>x.id!==id);
-    scheduleSave();
-  }
-  function restoreTaskWithLog(trashId, reason, username){
-    const idx = state.trash.findIndex(x=>x.id===trashId);
-    if(idx===-1) return;
-    const src = state.trash[idx];
-    const restored = Object.assign({}, src);
-    restored.status = 'todo';
-    restored.completedAt = null;
-    restored.timer = { elapsed: src.timer ? src.timer.elapsed : 0, running:false, startedAt:null };
-    restored.suspendStartedAt = null;
-    delete restored.deletedAt; delete restored.deletedBy; delete restored.deleteReason;
-    state.trash.splice(idx,1);
-    state.tasks.push(restored);
-    logAction(restored.id, restored.title, 'restore', reason, username);
-    recordActivity(); scheduleSave();
-  }
-  function reopenTaskWithLog(id, reason, username){
+  async function reopenTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
-    logAction(id, t.title, 'reopen', reason, username);
-    t.status='progress'; t.completedAt=null; startTimer(t);
-    recordActivity(); scheduleSave();
+    const { error } = await sb.from('tasks').update({ status:'progress', completed_at:null, timer_running:true, timer_started_at:new Date().toISOString() }).eq('id', id);
+    if(error){ appError=error.message; render(); return; }
+    await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'reopen', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
-  function resumeTaskWithLog(id, reason, username){
+  async function resumeTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
-    logAction(id, t.title, 'resume', reason, username);
-    commitSuspendedTime(t);
-    t.status='progress'; startTimer(t);
-    recordActivity(); scheduleSave();
+    const suspendedMsFinal = computeSuspendedElapsed(t);
+    const { error } = await sb.from('tasks').update({ status:'progress', suspended_ms:suspendedMsFinal, suspend_started_at:null, timer_running:true, timer_started_at:new Date().toISOString() }).eq('id', id);
+    if(error){ appError=error.message; render(); return; }
+    await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'resume', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
-  function suspendTaskWithLog(id, reason, username){
+  async function suspendTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
-    logAction(id, t.title, 'suspend', reason, username);
-    t.status='suspended'; pauseTimer(t); t.suspendStartedAt = Date.now();
-    recordActivity(); scheduleSave();
-  }
-  function updateNotes(id, notes){ const t=getTask(id); if(!t) return; t.notes=notes; recordActivity(); scheduleSave(); }
-  function updateTitle(id, title){ const t=getTask(id); if(!t||!title.trim()) return; t.title=title.trim(); scheduleSave(); }
-  function addSubtask(id, text){
-    text=text.trim(); if(!text) return;
-    const t=getTask(id); if(!t) return;
-    t.subtasks.push({id:uid(), text, done:false});
-    recordActivity(); scheduleSave();
-    focusSubtaskInput = true;
-    render();
-  }
-  function toggleSubtask(taskId, subId){
-    const t=getTask(taskId); if(!t) return;
-    const s=t.subtasks.find(s=>s.id===subId); if(!s) return;
-    s.done=!s.done; recordActivity();
-    t.subtasks.sort((a,b)=>(b.done?1:0)-(a.done?1:0));
-    const allDone = t.subtasks.length>0 && t.subtasks.every(s=>s.done);
-    if(allDone && t.status!=='done'){
-      t.status='done'; t.completedAt=new Date().toISOString(); pauseTimer(t);
-      if(openTaskId===taskId) openTaskId=null;
-    }
-    else if(!allDone && t.status==='done'){ t.status='progress'; t.completedAt=null; startTimer(t); }
-    scheduleSave(); render();
-  }
-  function deleteSubtask(taskId, subId){
-    const t=getTask(taskId); if(!t) return;
-    t.subtasks = t.subtasks.filter(s=>s.id!==subId);
-    scheduleSave(); render();
-  }
-  function startEditSubtask(key){ editingSubtaskKey = key; render(); }
-  function commitEditSubtask(taskId, subId, value){
-    const t = getTask(taskId); const s = t && t.subtasks.find(x=>x.id===subId);
-    if(s){ const val = (value||'').trim(); if(val) s.text = val; }
-    editingSubtaskKey = null;
-    scheduleSave();
-    focusSubtaskInput = true;
-    render();
+    const elapsedFinal = computeElapsed(t);
+    const { error } = await sb.from('tasks').update({ status:'suspended', timer_running:false, timer_started_at:null, timer_elapsed_ms:elapsedFinal, suspend_started_at:new Date().toISOString() }).eq('id', id);
+    if(error){ appError=error.message; render(); return; }
+    await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'suspend', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
 
-  /* ---------------- Streak math ---------------- */
-  function activeDaysSet(){ return new Set(Object.keys(state.activity)); }
+  let notesSaveTimer = null;
+  function updateNotes(id, notes){
+    const t = getTask(id); if(t) t.notes = notes;
+    clearTimeout(notesSaveTimer);
+    notesSaveTimer = setTimeout(()=>{
+      sb.from('tasks').update({notes}).eq('id', id).then(({error})=>{ if(error){ appError=error.message; render(); } });
+    }, 500);
+  }
+  async function updateTitle(id, title){
+    if(!title || !title.trim()) return;
+    await runMutation(()=> sb.from('tasks').update({title: title.trim()}).eq('id', id));
+  }
+  async function addSubtask(id, text){
+    text=(text||'').trim(); if(!text) return;
+    const t=getTask(id); if(!t) return;
+    focusSubtaskInput = true;
+    const { error } = await sb.from('subtasks').insert({ task_id:id, text, done:false, position: t.subtasks.length });
+    if(error){ appError=error.message; render(); return; }
+    appError = null;
+    await reloadAllData();
+  }
+  async function toggleSubtask(taskId, subId){
+    const t=getTask(taskId); if(!t) return;
+    const s=t.subtasks.find(s=>s.id===subId); if(!s) return;
+    const { error } = await sb.from('subtasks').update({done: !s.done}).eq('id', subId);
+    if(error){ appError=error.message; render(); return; }
+    await reloadAllData();
+    const freshT = getTask(taskId);
+    if(freshT){
+      const allDone = freshT.subtasks.length>0 && freshT.subtasks.every(s=>s.done);
+      if(allDone && freshT.status!=='done'){
+        if(openTaskId===taskId) openTaskId=null;
+        await sb.from('tasks').update({status:'done', completed_at:new Date().toISOString(), timer_running:false, timer_elapsed_ms: computeElapsed(freshT)}).eq('id', taskId);
+        await reloadAllData();
+      } else if(!allDone && freshT.status==='done'){
+        await sb.from('tasks').update({status:'progress', completed_at:null, timer_running:true, timer_started_at:new Date().toISOString()}).eq('id', taskId);
+        await reloadAllData();
+      }
+    }
+  }
+  async function deleteSubtask(taskId, subId){
+    await runMutation(()=> sb.from('subtasks').delete().eq('id', subId));
+  }
+  function startEditSubtask(key){ editingSubtaskKey = key; render(); }
+  async function commitEditSubtask(taskId, subId, value){
+    const val = (value||'').trim();
+    editingSubtaskKey = null;
+    if(!val){ render(); return; }
+    focusSubtaskInput = true;
+    await runMutation(()=> sb.from('subtasks').update({text:val}).eq('id', subId));
+  }
+
+  /* ---------------- Streak math (personal, per logged-in user) ---------------- */
+  function activeDaysSet(){
+    const uid = currentUserId();
+    const set = new Set();
+    state.tasks.concat(state.trash).forEach(t=>{
+      if(t.createdByUserId===uid){
+        set.add(dateToStr(new Date(t.createdAt)));
+        if(t.completedAt) set.add(dateToStr(new Date(t.completedAt)));
+      }
+    });
+    state.auditLog.forEach(e=>{ if(e.userId===uid) set.add(dateToStr(new Date(e.timestamp))); });
+    return set;
+  }
   function currentStreak(){
     const set=activeDaysSet();
     if(set.size===0) return 0;
@@ -634,13 +738,13 @@
   /* ---------------- Render root ---------------- */
   function render(){
     const app = document.getElementById('app');
-    if(!currentUser()){
-      app.innerHTML = renderLogin();
-      bindLoginEvents();
-      return;
-    }
+    if(authView==='loading'){ app.innerHTML = `<div class="loading">Loading Vector…</div>`; return; }
+    if(authView==='signin'){ app.innerHTML = renderSignIn(); bindAuthEvents(); return; }
+    if(authView==='set-password'){ app.innerHTML = renderSetPassword(); bindAuthEvents(); return; }
+
     const isPhone = window.innerWidth < 768;
     app.innerHTML = `
+      ${appError ? renderErrorBanner() : ''}
       ${renderTopbar()}
       ${view==='board' ? renderDayNav() : ''}
       ${view==='board' && isPhone ? renderColSwitch() : ''}
@@ -654,7 +758,6 @@
       ${pendingAction ? renderActionDialog() : (openTaskId ? renderModal(getTask(openTaskId)) : '')}
       ${selectedSummaryDay ? renderDaySummary(selectedSummaryDay) : ''}
       ${futurePickerOpen ? renderFuturePicker() : ''}
-      ${pendingImportData ? renderImportConfirm() : ''}
     `;
     bindEvents();
     if(view==='calendar') fitCalendarHeight();
@@ -666,6 +769,15 @@
     }
     const editEl = document.querySelector('[data-edit-sub]');
     if(editEl){ editEl.focus(); editEl.setSelectionRange(editEl.value.length, editEl.value.length); }
+    if(keepDueOpen){
+      const dueBtn = document.querySelector('[data-due-toggle]');
+      if(dueBtn) dueBtn.focus();
+      keepDueOpen = false;
+    }
+  }
+
+  function renderErrorBanner(){
+    return `<div class="error-banner"><span>${escapeHtml(appError)}</span><button class="icon-btn" data-dismiss-error>${ICONS.x}</button></div>`;
   }
 
   function ensureTicking(){
@@ -708,32 +820,55 @@
     wrap.style.height = avail + 'px';
   }
 
-  /* ---------------- Login ---------------- */
-  function renderLogin(){
+  /* ---------------- Auth screens ---------------- */
+  function renderSignIn(){
     return `
     <div class="login-wrap">
       <div class="login-card">
         <div class="brand"><span class="wordmark serif">Vector</span></div>
-        <p class="sub">Who's working today?</p>
-        ${state.users.length ? `<div class="user-list">
-          ${state.users.map(u=>`<button class="user-chip-btn" data-select-user="${u.id}"><span class="user-avatar">${escapeHtml(initialsFor(u.name))}</span>${escapeHtml(u.name)}</button>`).join('')}
-        </div>` : `<p style="font-size:13px;color:var(--ink-faint);text-align:center;margin:0 0 12px;">No profiles yet — add one below.</p>`}
-        <div class="add-user-row">
-          <input type="text" placeholder="Add your name…" data-new-user />
-          <button class="primary-btn" style="width:auto;padding:10px 16px;" data-add-user>Join</button>
-        </div>
-        <p style="font-size:11px;color:var(--ink-faint);margin-top:16px;text-align:center;">Prototype profiles for now — no password yet. Real accounts come with the backend.</p>
+        <p class="sub">${forgotMode ? 'Reset your password' : 'Sign in to continue'}</p>
+        <input type="email" class="auth-input" placeholder="Email" value="${escapeAttr(authEmail)}" data-auth-email />
+        ${!forgotMode ? `<input type="password" class="auth-input" placeholder="Password" value="${escapeAttr(authPassword)}" data-auth-password />` : ''}
+        ${authError ? `<p class="auth-error">${escapeHtml(authError)}</p>` : ''}
+        ${authNotice ? `<p class="auth-error" style="color:var(--done);">${escapeHtml(authNotice)}</p>` : ''}
+        <button class="primary-btn" style="margin-top:4px;" data-auth-submit ${authBusy?'disabled':''}>${authBusy ? 'Please wait…' : (forgotMode ? 'Send reset link' : 'Sign In')}</button>
+        <button class="logout-btn" style="display:block;margin:12px auto 0;" data-auth-toggle-forgot>${forgotMode ? 'Back to sign in' : 'Forgot password?'}</button>
+        <p style="font-size:11px;color:var(--ink-faint);margin-top:16px;text-align:center;">Accounts are invite-only. Ask your admin if you don't have one yet.</p>
       </div>
     </div>`;
   }
-  function bindLoginEvents(){
+  function renderSetPassword(){
+    return `
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="brand"><span class="wordmark serif">Vector</span></div>
+        <p class="sub">Set your password to finish joining</p>
+        <input type="password" class="auth-input" placeholder="New password" value="${escapeAttr(newPassword1)}" data-new-pw1 />
+        <input type="password" class="auth-input" placeholder="Confirm password" value="${escapeAttr(newPassword2)}" data-new-pw2 />
+        ${authError ? `<p class="auth-error">${escapeHtml(authError)}</p>` : ''}
+        <button class="primary-btn" style="margin-top:4px;" data-set-password-submit ${authBusy?'disabled':''}>${authBusy ? 'Please wait…' : 'Set password & continue'}</button>
+      </div>
+    </div>`;
+  }
+  function bindAuthEvents(){
     const app = document.getElementById('app');
-    app.querySelectorAll('[data-select-user]').forEach(b=>b.addEventListener('click', ()=>selectUser(b.dataset.selectUser)));
-    const input = app.querySelector('[data-new-user]');
-    const addBtn = app.querySelector('[data-add-user]');
-    const submit = ()=>{ if(input) addUser(input.value); };
-    if(addBtn) addBtn.addEventListener('click', submit);
-    if(input) input.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
+    const emailEl = app.querySelector('[data-auth-email]');
+    if(emailEl) emailEl.addEventListener('input', ()=>{ authEmail = emailEl.value; });
+    const pwEl = app.querySelector('[data-auth-password]');
+    if(pwEl) pwEl.addEventListener('input', ()=>{ authPassword = pwEl.value; });
+    const submitBtn = app.querySelector('[data-auth-submit]');
+    if(submitBtn) submitBtn.addEventListener('click', ()=>{ forgotMode ? submitForgotPassword() : submitSignIn(); });
+    const toggleForgot = app.querySelector('[data-auth-toggle-forgot]');
+    if(toggleForgot) toggleForgot.addEventListener('click', ()=>{ forgotMode=!forgotMode; authError=null; authNotice=null; render(); });
+    [emailEl,pwEl].forEach(el=>{ if(el) el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ forgotMode ? submitForgotPassword() : submitSignIn(); } }); });
+
+    const pw1 = app.querySelector('[data-new-pw1]');
+    if(pw1) pw1.addEventListener('input', ()=>{ newPassword1=pw1.value; });
+    const pw2 = app.querySelector('[data-new-pw2]');
+    if(pw2) pw2.addEventListener('input', ()=>{ newPassword2=pw2.value; });
+    const setPwBtn = app.querySelector('[data-set-password-submit]');
+    if(setPwBtn) setPwBtn.addEventListener('click', submitSetPassword);
+    [pw1,pw2].forEach(el=>{ if(el) el.addEventListener('keydown', e=>{ if(e.key==='Enter') submitSetPassword(); }); });
   }
 
   function renderTopbar(){
@@ -742,7 +877,11 @@
       <div class="brand"><span class="wordmark">Vector</span><span class="tagline">direction with intent</span></div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <div class="streak-badge">${ICONS.flame}${currentStreak()} day streak</div>
-        <div class="current-user-badge"><span class="user-avatar">${escapeHtml(initialsFor(currentUserName()))}</span>${escapeHtml(currentUserName())}<button class="logout-btn" data-logout>switch</button></div>
+        <div class="filter-toggle">
+          <button data-filter="all" class="${taskFilter==='all'?'active':''}">All</button>
+          <button data-filter="mine" class="${taskFilter==='mine'?'active':''}">Mine</button>
+        </div>
+        <div class="current-user-badge"><span class="user-avatar">${escapeHtml(initialsFor(currentUserName()))}</span>${escapeHtml(currentUserName())}<button class="logout-btn" data-logout>sign out</button></div>
         <div class="nav-tabs">
           <button data-nav="board" class="${view==='board'?'active':''}">Board</button>
           <button data-nav="calendar" class="${view==='calendar'?'active':''}">Calendar</button>
@@ -786,7 +925,11 @@
     if(isFuture(t.day)) return t.day;
     return todayStr();
   }
-  function tasksForDay(day){ return state.tasks.filter(t=>effectiveDay(t)===day); }
+  function tasksForDay(day){
+    let list = state.tasks.filter(t=>effectiveDay(t)===day);
+    if(taskFilter==='mine') list = list.filter(t=>t.createdByUserId===currentUserId());
+    return list;
+  }
 
   function renderBoard(isPhone){
     const tasks = tasksForDay(selectedDay);
@@ -801,6 +944,43 @@
 
   const EMPTY_HINTS = { todo: 'Nothing planned yet.', progress: 'Begin a task to see it here.', done: 'Complete a task to see it here.', suspended: 'No suspended tasks.' };
 
+  function renderMiniCalendar(){
+    const y = addDueMonth.getFullYear(), m = addDueMonth.getMonth();
+    const first = new Date(y,m,1);
+    const startPad = first.getDay();
+    const daysInMonth = new Date(y,m+1,0).getDate();
+    const monthLabel = addDueMonth.toLocaleDateString('en-US',{month:'short', year:'numeric'});
+    let cells = '';
+    for(let i=0;i<startPad;i++) cells += `<div class="cal-cell pad"></div>`;
+    for(let d=1; d<=daysInMonth; d++){
+      const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const isToday = ds===todayStr();
+      const isSel = ds===addTaskDueDate;
+      cells += `<button type="button" class="cal-cell ${isToday?'today-cell':''} ${isSel?'selected-cell':''}" data-due-pick="${ds}">${d}</button>`;
+    }
+    return `
+    <div class="cal-header-mini">
+      <span>${monthLabel}</span>
+      <div style="display:flex;gap:4px;">
+        <button type="button" class="icon-btn" style="width:20px;height:20px;" data-due-nav="-1">${ICONS.chevL}</button>
+        <button type="button" class="icon-btn" style="width:20px;height:20px;" data-due-nav="1">${ICONS.chevR}</button>
+        <button type="button" class="icon-btn" style="width:20px;height:20px;" data-due-close>${ICONS.x}</button>
+      </div>
+    </div>
+    <div class="cal-dow-row">${['S','M','T','W','T','F','S'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}</div>
+    <div class="cal-grid-flex">${cells}</div>
+    ${addTaskDueDate ? `<button type="button" class="due-clear-btn" data-due-clear>Clear date</button>` : ''}
+    `;
+  }
+  function submitNewTaskFromRow(){
+    const addInput = document.querySelector('[data-add-input]');
+    if(!addInput) return;
+    createTask(addInput.value, selectedDay, addTaskDueDate);
+    addTaskDueDate = null;
+    dueDropdownOpen = false;
+    addDueMonth = new Date();
+  }
+
   function renderColumn(col, isPhone){
     const activeClass = (isPhone && mobileCol===col.key) ? 'mobile-active' : '';
     return `
@@ -809,7 +989,13 @@
         <div class="column-title"><span class="dot ${col.key}"></span>${col.label}</div>
         <span class="count">${col.tasks.length}</span>
       </div>
-      ${col.key==='todo' ? `<div class="add-row"><input type="text" placeholder="Add a task and press Enter…" data-add-input /><input type="date" class="due-input" data-add-due title="Due date" /></div>` : ''}
+      ${col.key==='todo' ? `<div class="add-row">
+        <input type="text" placeholder="Add a task and press Enter…" data-add-input />
+        <div class="due-picker-wrap">
+          <button type="button" class="due-input due-btn" data-due-toggle>${addTaskDueDate || 'Due date'}</button>
+          ${dueDropdownOpen ? `<div class="due-picker-dropdown">${renderMiniCalendar()}</div>` : ''}
+        </div>
+      </div>` : ''}
       <div class="cards">
         ${col.tasks.length===0 ? `<div class="empty-hint">${EMPTY_HINTS[col.key]}</div>` : ''}
         ${col.tasks.map(t=>renderCard(t)).join('')}
@@ -833,8 +1019,8 @@
         ${t.subtasks.length ? `<span>${subDone}/${t.subtasks.length} subtasks</span>` : ''}
         ${t.notes ? `<span>note</span>` : ''}
         ${t.dueDate ? `<span>due ${t.dueDate}</span>` : ''}
+        <span>by ${escapeHtml(t.createdBy)}</span>
       </div>
-      ${t.status==='suspended' ? `<div class="suspend-elapsed" data-suspend-elapsed="${t.id}">Suspended ${formatDuration(computeSuspendedElapsed(t))}</div>` : ''}
       ${caption ? `<div class="log-caption">${caption}</div>` : ''}
     </button>`;
   }
@@ -846,11 +1032,12 @@
     const startPad = first.getDay();
     const daysInMonth = new Date(y,m+1,0).getDate();
     const monthLabel = calMonth.toLocaleDateString('en-US',{month:'long', year:'numeric'});
+    const activeSet = activeDaysSet();
     let cells = '';
     for(let i=0;i<startPad;i++) cells += `<div class="cal-cell pad"></div>`;
     for(let d=1; d<=daysInMonth; d++){
       const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-      const active = !!state.activity[ds];
+      const active = activeSet.has(ds);
       const fut = isFuture(ds);
       const isToday = ds===todayStr();
       const sel = selectedSummaryDay===ds ? 'selected-cell' : '';
@@ -882,23 +1069,8 @@
         <div class="streak-stats-compact">
           <div><strong>${currentStreak()}</strong><span>current</span></div>
           <div><strong>${longestStreak()}</strong><span>longest</span></div>
-          <div><strong>${Object.keys(state.activity).length}</strong><span>active days</span></div>
+          <div><strong>${activeSet.size}</strong><span>active days</span></div>
         </div>
-      </div>
-    </div>`;
-  }
-
-  function renderImportConfirm(){
-    const count = pendingImportData.tasks.length;
-    return `
-    <div class="overlay" data-close-import>
-      <div class="modal" data-stop>
-        <div class="modal-head">
-          <h3 class="serif" style="margin:0;font-size:19px;">Import data</h3>
-          <button class="icon-btn" data-cancel-import>${ICONS.x}</button>
-        </div>
-        <p style="font-size:13.5px;color:var(--ink-soft);">This file contains ${count} task${count===1?'':'s'}. Importing will replace everything currently on this device — this can't be undone.</p>
-        <button class="primary-btn" style="background:var(--danger);margin-top:12px;" data-confirm-import>Replace and import</button>
       </div>
     </div>`;
   }
@@ -961,8 +1133,8 @@
       ${items.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">Nothing in the trash.</p>` : items.map(t=>`
         <div class="trash-item">
           <div class="title">${escapeHtml(t.title)}</div>
-          <div class="meta">Deleted by ${escapeHtml(t.deletedBy)} — ${escapeHtml(t.deleteReason)}</div>
-          <div class="meta">${new Date(t.deletedAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>
+          <div class="meta">Deleted by ${escapeHtml(t.deletedBy)} — ${escapeHtml(t.deleteReason||'')}</div>
+          <div class="meta">${t.deletedAt ? new Date(t.deletedAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''}</div>
           <button class="primary-btn" style="margin-top:10px;" data-action="restore" data-taskid="${t.id}">Restore</button>
         </div>`).join('')}
     </div>`;
@@ -980,21 +1152,44 @@
         const total = d.early+d.ontime+d.overdue;
         const pct = k => total ? (d[k]/total*100) : 0;
         const avgOverdue = d.overdue ? (d.overdueDaysTotal/d.overdue).toFixed(1) : 0;
+        const THRESHOLD = 6;
+        const meetsThreshold = total >= THRESHOLD;
+        const effPct = meetsThreshold ? Math.round(((d.early+d.ontime)/total)*100) : null;
         return `
         <div class="perf-block">
-          <div class="perf-user-label">${escapeHtml(u)} — ${total} task${total===1?'':'s'} tracked${d.overdue? `, avg ${avgOverdue}d overdue when late` : ''}</div>
-          <div class="perf-bar-row">
-            ${d.early? `<div class="perf-seg early" style="width:${pct('early')}%;"></div>` : ''}
-            ${d.ontime? `<div class="perf-seg ontime" style="width:${pct('ontime')}%;"></div>` : ''}
-            ${d.overdue? `<div class="perf-seg overdue" style="width:${pct('overdue')}%;"></div>` : ''}
+          <div class="perf-user-label">${escapeHtml(u)} — ${total} task${total===1?'':'s'} tracked${d.overdue? `, avg ${avgOverdue} day${avgOverdue==1?'':'s'} overdue when late` : ''}</div>
+          <div class="perf-row-flex">
+            <div class="perf-bar-row" style="flex:1;margin-bottom:0;">
+              ${d.early? `<div class="perf-seg early" style="width:${pct('early')}%;"></div>` : ''}
+              ${d.ontime? `<div class="perf-seg ontime" style="width:${pct('ontime')}%;"></div>` : ''}
+              ${d.overdue? `<div class="perf-seg overdue" style="width:${pct('overdue')}%;"></div>` : ''}
+            </div>
+            <div class="perf-pct">${meetsThreshold ? effPct+'%' : '—'}</div>
           </div>
           <div class="perf-legend">
             <span><span class="legend-swatch" style="background:var(--done);"></span>Early (${d.early})</span>
             <span><span class="legend-swatch" style="background:var(--pri-none);"></span>On time (${d.ontime})</span>
             <span><span class="legend-swatch" style="background:var(--danger);"></span>Overdue (${d.overdue})</span>
+            ${!meetsThreshold ? `<span>${THRESHOLD-total} more tracked to unlock %</span>` : ''}
           </div>
         </div>`;
       }).join('')}
+    </div>`;
+  }
+
+  function renderSuspendedLogCard(){
+    const items = state.tasks.filter(t=>t.status==='suspended');
+    return `
+    <div class="chart-card">
+      <h3>Suspended tasks</h3>
+      ${items.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">Nothing currently suspended.</p>` : `
+      <div class="log-list">
+        ${items.map(t=>`
+          <div class="log-item">
+            <div class="log-item-title">${escapeHtml(t.title)}</div>
+            <div class="log-item-time" data-suspend-elapsed="${t.id}">Suspended ${formatDuration(computeSuspendedElapsed(t))}</div>
+          </div>`).join('')}
+      </div>`}
     </div>`;
   }
 
@@ -1028,7 +1223,6 @@
       for(let m=0;m<12;m++){ chartLabels.push(names[m]); chartValues.push(months[m]||0); }
     }
     const maxVal = Math.max(1, ...chartValues);
-
     const deletedEntries = state.auditLog.filter(e=>e.action==='delete').slice().reverse();
 
     return `
@@ -1050,6 +1244,7 @@
         </div>
       </div>
       ${renderPerformanceCard()}
+      ${renderSuspendedLogCard()}
       <div class="chart-card">
         <h3>Deleted tasks log</h3>
         ${deletedEntries.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No deletions recorded.</p>` : `
@@ -1063,12 +1258,9 @@
         </div>`}
       </div>
       <div class="chart-card">
-        <h3>Backup &amp; restore</h3>
-        <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">Save your tasks to a file, or load a previously exported file into this device.</p>
+        <h3>Backup</h3>
+        <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">Save a snapshot of the current shared board to a file.</p>
         <button class="primary-btn" data-export-data>Export data</button>
-        <button class="primary-btn" style="margin-top:8px;background:var(--surface);color:var(--ink);border:1px solid var(--line-strong);" data-import-trigger>Import data</button>
-        <input type="file" accept="application/json,.json" data-import-file style="display:none;" />
-        ${importError ? `<p style="font-size:12px;color:var(--danger);margin-top:8px;">${escapeHtml(importError)}</p>` : ''}
       </div>
     </div>`;
   }
@@ -1190,20 +1382,23 @@
     </div>`;
   }
 
-  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-  function escapeAttr(s){ return escapeHtml(s); }
-
   /* ---------------- Events ---------------- */
   function bindEvents(){
     const app = document.getElementById('app');
 
+    const dismissErr = app.querySelector('[data-dismiss-error]');
+    if(dismissErr) dismissErr.addEventListener('click', ()=>{ appError=null; render(); });
+
     const logoutBtn = app.querySelector('[data-logout]');
     if(logoutBtn) logoutBtn.addEventListener('click', logout);
 
-    app.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{ view=b.dataset.nav; selectedSummaryDay=null; render(); }));
+    app.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ taskFilter=b.dataset.filter; render(); }));
+
+    app.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{ view=b.dataset.nav; selectedSummaryDay=null; dueDropdownOpen=false; render(); }));
     app.querySelectorAll('[data-day]').forEach(b=>b.addEventListener('click', ()=>{
       const n = parseInt(b.dataset.day,10);
       selectedDay = n===0 ? todayStr() : addDays(selectedDay, n);
+      dueDropdownOpen=false;
       render();
     }));
     app.querySelectorAll('[data-mcol]').forEach(b=>b.addEventListener('click', ()=>{ mobileCol=b.dataset.mcol; render(); }));
@@ -1214,10 +1409,28 @@
     app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; render(); }));
 
     const addInput = app.querySelector('[data-add-input]');
-    const addDue = app.querySelector('[data-add-due]');
-    if(addInput) addInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ createTask(addInput.value, selectedDay, addDue?addDue.value:null); } });
+    if(addInput) addInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ submitNewTaskFromRow(); } });
 
-    app.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click', ()=>{ openTaskId=b.dataset.open; editingSubtaskKey=null; render(); }));
+    const dueToggleBtn = app.querySelector('[data-due-toggle]');
+    if(dueToggleBtn){
+      dueToggleBtn.addEventListener('focus', ()=>{ if(!dueDropdownOpen){ dueDropdownOpen = true; keepDueOpen = true; render(); } });
+      dueToggleBtn.addEventListener('click', ()=>{ if(!dueDropdownOpen){ dueDropdownOpen = true; keepDueOpen = true; render(); } });
+      dueToggleBtn.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); submitNewTaskFromRow(); } });
+    }
+    const dueCloseBtn = app.querySelector('[data-due-close]');
+    if(dueCloseBtn) dueCloseBtn.addEventListener('click', ()=>{ dueDropdownOpen=false; keepDueOpen=false; render(); });
+    app.querySelectorAll('[data-due-nav]').forEach(b=>b.addEventListener('click', ()=>{
+      addDueMonth = new Date(addDueMonth.getFullYear(), addDueMonth.getMonth()+parseInt(b.dataset.dueNav,10), 1);
+      keepDueOpen = true; render();
+    }));
+    app.querySelectorAll('[data-due-pick]').forEach(b=>b.addEventListener('click', ()=>{
+      addTaskDueDate = b.dataset.duePick;
+      keepDueOpen = true; render();
+    }));
+    const dueClearBtn = app.querySelector('[data-due-clear]');
+    if(dueClearBtn) dueClearBtn.addEventListener('click', ()=>{ addTaskDueDate=null; keepDueOpen=true; render(); });
+
+    app.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click', ()=>{ openTaskId=b.dataset.open; editingSubtaskKey=null; dueDropdownOpen=false; render(); }));
     const overlay = app.querySelector('[data-close-overlay]');
     if(overlay){
       overlay.addEventListener('click', e=>{ if(e.target===overlay){ openTaskId=null; editingSubtaskKey=null; render(); } });
@@ -1323,26 +1536,21 @@
     }));
 
     const exportBtn = app.querySelector('[data-export-data]');
-    if(exportBtn) exportBtn.addEventListener('click', ()=>{ exportData(); });
-    const importTrigger = app.querySelector('[data-import-trigger]');
-    const importFileInput = app.querySelector('[data-import-file]');
-    if(importTrigger && importFileInput) importTrigger.addEventListener('click', ()=>importFileInput.click());
-    if(importFileInput) importFileInput.addEventListener('change', (e)=>{
-      const file = e.target.files[0];
-      if(file) handleImportFile(file);
-      importFileInput.value = '';
+    if(exportBtn) exportBtn.addEventListener('click', ()=>{
+      const payload = JSON.stringify({tasks: state.tasks, trash: state.trash, auditLog: state.auditLog}, null, 2);
+      const filename = 'vector-export-' + todayStr() + '.json';
+      const blob = new Blob([payload], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     });
-    const closeImportOverlay = app.querySelector('[data-close-import]');
-    if(closeImportOverlay) closeImportOverlay.addEventListener('click', e=>{ if(e.target===closeImportOverlay){ pendingImportData=null; render(); } });
-    const cancelImportBtn = app.querySelector('[data-cancel-import]');
-    if(cancelImportBtn) cancelImportBtn.addEventListener('click', ()=>{ pendingImportData=null; render(); });
-    const confirmImportBtn = app.querySelector('[data-confirm-import]');
-    if(confirmImportBtn) confirmImportBtn.addEventListener('click', confirmImport);
   }
 
   window.addEventListener('resize', ()=>render());
 
-  loadState();
+  bootstrapAuth();
 })();
 </script>
 </body>
