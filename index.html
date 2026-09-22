@@ -104,7 +104,9 @@
   .due-picker-dropdown .icon-btn{background:var(--surface-alt);}
   .due-clear-btn{margin-top:8px;width:100%;border:none;background:var(--surface-alt);color:var(--ink-soft);font-size:11.5px;padding:6px;border-radius:7px;}
   @media (max-width:767px){ .add-row{flex-wrap:wrap;position:relative;} .due-input{width:100%;} .due-picker-wrap{width:100%;} .due-picker-dropdown{right:0;left:0;width:auto;} }
-  .cards{display:flex;flex-direction:column;gap:8px;flex:1;max-height:560px;overflow-y:auto;}
+  .cards{display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
+  .cards::-webkit-scrollbar{display:none;}
+  .scroll-hint{font-size:10.5px;color:var(--ink-faint);text-align:center;padding-top:6px;flex-shrink:0;}
   .card{background:var(--surface);border-radius:var(--radius);padding:11px 12px;box-shadow:var(--shadow-card);border-left:8px solid var(--pri-low);text-align:left;width:100%;}
   .card.done-card{opacity:0.72;}
   .card.suspended-card{opacity:0.85;}
@@ -167,7 +169,8 @@
   .bar-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
   .bar{width:100%;background:var(--progress);border-radius:4px 4px 2px 2px;min-height:2px;}
   .bar-col .blabel{font-size:10px;color:var(--ink-faint);margin-top:5px;}
-  .log-list{display:flex;flex-direction:column;gap:8px;margin-top:4px;max-height:520px;overflow-y:auto;}
+  .log-list{display:flex;flex-direction:column;gap:8px;margin-top:4px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
+  .log-list::-webkit-scrollbar{display:none;}
   .log-item{background:var(--surface);border-radius:10px;padding:10px 12px;}
   .log-item-title{font-weight:600;font-size:13.5px;}
   .log-item-time{font-size:10.5px;color:var(--ink-faint);margin-top:2px;}
@@ -312,6 +315,7 @@
   let keepDueOpen = false;
   let taskFilter = 'all';
   let appError = null;
+  let addTaskTitleDraft = '';
 
   /* ---------------- Auth state ---------------- */
   let sbSession = null;
@@ -428,7 +432,7 @@
       notes: row.notes || '',
       subtasks: (row.subtasks||[]).slice()
         .sort((a,b)=>(a.position||0)-(b.position||0))
-        .sort((a,b)=>(a.done?1:0)-(b.done?1:0))
+        .sort((a,b)=>(b.done?1:0)-(a.done?1:0))
         .map(s=>({id:s.id, text:s.text, done:s.done})),
       priority: row.priority || 'low',
       dueDate: row.due_date,
@@ -761,6 +765,7 @@
     `;
     bindEvents();
     if(view==='calendar') fitCalendarHeight();
+    fitScrollLists();
     ensureTicking();
     if(focusSubtaskInput){
       const el = document.querySelector('[data-add-sub]');
@@ -806,6 +811,18 @@
     document.querySelectorAll('[data-suspend-elapsed]').forEach(el=>{
       const t = getTask(el.dataset.suspendElapsed); if(!t) return;
       el.textContent = 'Suspended ' + formatDuration(computeSuspendedElapsed(t));
+    });
+  }
+
+  function fitScrollLists(){
+    document.querySelectorAll('.cards, .log-list').forEach(container=>{
+      const items = Array.from(container.children).filter(el=>!el.classList.contains('scroll-hint'));
+      if(items.length <= 6){ container.style.maxHeight = 'none'; return; }
+      const gapPx = parseFloat(getComputedStyle(container).rowGap) || 8;
+      let total = 0;
+      for(let i=0;i<6;i++){ total += items[i].getBoundingClientRect().height; }
+      total += gapPx * 5;
+      container.style.maxHeight = total + 'px';
     });
   }
 
@@ -976,6 +993,7 @@
     const addInput = document.querySelector('[data-add-input]');
     if(!addInput) return;
     createTask(addInput.value, selectedDay, addTaskDueDate);
+    addTaskTitleDraft = '';
     addTaskDueDate = null;
     dueDropdownOpen = false;
     addDueMonth = new Date();
@@ -990,7 +1008,7 @@
         <span class="count">${col.tasks.length}</span>
       </div>
       ${col.key==='todo' ? `<div class="add-row">
-        <input type="text" placeholder="Add a task and press Enter…" data-add-input />
+        <input type="text" placeholder="Add a task and press Enter…" value="${escapeAttr(addTaskTitleDraft)}" data-add-input />
         <div class="due-picker-wrap">
           <button type="button" class="due-input due-btn" data-due-toggle>${addTaskDueDate || 'Due date'}</button>
           ${dueDropdownOpen ? `<div class="due-picker-dropdown">${renderMiniCalendar()}</div>` : ''}
@@ -1000,6 +1018,7 @@
         ${col.tasks.length===0 ? `<div class="empty-hint">${EMPTY_HINTS[col.key]}</div>` : ''}
         ${col.tasks.map(t=>renderCard(t)).join('')}
       </div>
+      ${col.tasks.length > 6 ? `<div class="scroll-hint">Scroll for ${col.tasks.length - 6} more</div>` : ''}
     </div>`;
   }
 
@@ -1189,7 +1208,8 @@
             <div class="log-item-title">${escapeHtml(t.title)}</div>
             <div class="log-item-time" data-suspend-elapsed="${t.id}">Suspended ${formatDuration(computeSuspendedElapsed(t))}</div>
           </div>`).join('')}
-      </div>`}
+      </div>
+      ${items.length > 6 ? `<div class="scroll-hint">Scroll for ${items.length - 6} more</div>` : ''}`}
     </div>`;
   }
 
@@ -1255,7 +1275,8 @@
               <div class="log-item-time">${new Date(e.timestamp).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>
               <div class="log-caption">— ${escapeHtml(e.username)}: ${escapeHtml(e.reason)}</div>
             </div>`).join('')}
-        </div>`}
+        </div>
+        ${deletedEntries.length > 6 ? `<div class="scroll-hint">Scroll for ${deletedEntries.length - 6} more</div>` : ''}`}
       </div>
       <div class="chart-card">
         <h3>Backup</h3>
@@ -1409,7 +1430,10 @@
     app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; render(); }));
 
     const addInput = app.querySelector('[data-add-input]');
-    if(addInput) addInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ submitNewTaskFromRow(); } });
+    if(addInput){
+      addInput.addEventListener('input', ()=>{ addTaskTitleDraft = addInput.value; });
+      addInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ submitNewTaskFromRow(); } });
+    }
 
     const dueToggleBtn = app.querySelector('[data-due-toggle]');
     if(dueToggleBtn){
@@ -1548,7 +1572,12 @@
     });
   }
 
-  window.addEventListener('resize', ()=>render());
+  let lastResizeWidth = window.innerWidth;
+  window.addEventListener('resize', ()=>{
+    if(window.innerWidth === lastResizeWidth) return;
+    lastResizeWidth = window.innerWidth;
+    render();
+  });
 
   bootstrapAuth();
 })();
