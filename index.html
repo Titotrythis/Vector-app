@@ -520,13 +520,19 @@
     const totalSec = Math.floor(ms/1000);
     const totalDays = totalSec/86400;
     if(totalDays < 1) return fmtElapsed(ms);
-    const days = Math.floor(totalDays);
-    if(days < 30) return `${days} day${days===1?'':'s'}`;
+    if(totalDays < 7){
+      const days = Math.floor(totalDays);
+      return `${days} day${days===1?'':'s'}`;
+    }
+    const totalWeeks = totalDays/7;
+    if(totalWeeks < 30.44/7){
+      const weeks = Math.floor(totalWeeks);
+      return `${weeks} week${weeks===1?'':'s'}`;
+    }
     const totalMonths = totalDays/30.44;
     if(totalMonths < 12){
       const months = Math.floor(totalMonths);
-      const remDays = Math.floor(totalDays - months*30.44);
-      return `${months} month${months===1?'':'s'}` + (remDays>0? `, ${remDays} day${remDays===1?'':'s'}` : '');
+      return `${months} month${months===1?'':'s'}`;
     }
     const years = Math.floor(totalDays/365.25);
     const remMonths = Math.floor((totalDays - years*365.25)/30.44);
@@ -797,6 +803,10 @@
       const t = getTask(el.dataset.timerDigital); if(!t) return;
       el.textContent = fmtElapsed(computeElapsed(t));
     });
+    document.querySelectorAll('[data-timer-escalating]').forEach(el=>{
+      const t = getTask(el.dataset.timerEscalating); if(!t) return;
+      el.textContent = formatDuration(computeElapsed(t));
+    });
     document.querySelectorAll('[data-timer-ring]').forEach(el=>{
       const t = getTask(el.dataset.timerRing); if(!t) return;
       const totalSec = Math.floor(computeElapsed(t)/1000);
@@ -1032,7 +1042,7 @@
     <button class="card ${cls}" style="border-left-color:${priorityColor(t.priority)};" data-open="${t.id}">
       <div class="card-top-row">
         <div class="title">${escapeHtml(t.title)}</div>
-        ${showTimer ? `<span class="card-timer-badge" data-timer-digital="${t.id}">${fmtElapsed(elapsed)}</span>` : ''}
+        ${showTimer ? `<span class="card-timer-badge" data-timer-escalating="${t.id}">${formatDuration(elapsed)}</span>` : ''}
       </div>
       <div class="meta">
         ${t.subtasks.length ? `<span>${subDone}/${t.subtasks.length} subtasks</span>` : ''}
