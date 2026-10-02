@@ -6,34 +6,34 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Vector">
-<meta name="theme-color" content="#EAF3E5">
+<meta name="theme-color" content="#EAF5E3">
 <title>Vector — Direction with Intent</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg: #EAF3E5;
-    --bg-deep: #DCE8D3;
+    --bg: #EAF5E3;
+    --bg-deep: #AFD39B;
     --surface: #FFFFFF;
-    --surface-alt: #F2F7EE;
-    --ink: #1E4733;
-    --ink-soft: #4C6B57;
-    --ink-faint: #8AA393;
-    --line: #D3E3CA;
-    --line-strong: #B7D1AA;
+    --surface-alt: #AFD39B;
+    --ink: #193A28;
+    --ink-soft: #3F6B4F;
+    --ink-faint: #6F9579;
+    --line: #CBE0BE;
+    --line-strong: #9FC489;
     --todo: #5B6472;
     --todo-bg: #E9EBEE;
-    --progress: #6FA345;
-    --progress-bg: #E4F0DB;
-    --done: #1E4733;
-    --done-bg: #DDE9D6;
+    --progress: #4F8A2E;
+    --progress-bg: #CDE3BB;
+    --done: #193A28;
+    --done-bg: #D3E6C6;
     --suspended: #6B5B95;
     --suspended-bg: #E7E1F0;
-    --streak: #B68A16;
-    --streak-bg: #F3E8C6;
-    --active-day-bg: #C9DFC0;
-    --active-day-fg: #1E4733;
+    --streak: #FFFFFF;
+    --streak-bg: #193A28;
+    --active-day-bg: #6FA37E;
+    --active-day-fg: #FFFFFF;
     --danger: #A6412A;
     --pri-none: #3B6FA8;
     --pri-low: #6FA345;
@@ -42,7 +42,7 @@
     --pri-urgent: #C81E3A;
     --radius: 10px;
     --radius-lg: 16px;
-    --shadow-card: 0 1px 0 rgba(30,71,51,0.06), 0 1px 3px rgba(30,71,51,0.08);
+    --shadow-card: 0 1px 0 rgba(25,58,40,0.08), 0 1px 3px rgba(25,58,40,0.10);
   }
   *{box-sizing:border-box;}
   html,body{height:100%;}
@@ -71,7 +71,7 @@
   .brand .wordmark::before{content:"◆ ";font-size:14px;color:var(--progress);}
   .brand .tagline{font-size:11px;color:var(--ink-faint);font-style:italic;display:none;}
   @media (min-width:520px){ .brand .tagline{display:inline;} }
-  .streak-badge{display:flex;align-items:center;gap:6px;background:var(--streak-bg);color:#7A5B0E;padding:6px 12px 6px 10px;border-radius:999px;font-weight:600;font-size:14px;}
+  .streak-badge{display:flex;align-items:center;gap:6px;background:var(--streak-bg);color:var(--streak);padding:6px 12px 6px 10px;border-radius:999px;font-weight:600;font-size:14px;}
   .streak-badge svg{width:15px;height:15px;}
   .nav-tabs{display:flex;gap:4px;background:var(--bg-deep);padding:4px;border-radius:999px;}
   .nav-tabs button{border:none;background:transparent;padding:8px 14px;border-radius:999px;font-size:13.5px;font-weight:600;color:var(--ink-soft);}
@@ -142,7 +142,7 @@
   .cal-cell.future{color:var(--ink-faint);}
   .cal-cell.today-cell{box-shadow:0 0 0 2px var(--ink) inset;}
   .cal-cell.selected-cell{outline:2px solid var(--progress);outline-offset:-2px;}
-  .cal-cell.freeze-cell{background:#C7C7C2;color:var(--ink-soft);}
+  .cal-cell.freeze-cell{background:#8C8C87;color:var(--ink-soft);}
   .cal-footer{flex-shrink:0;padding-top:8px;}
   .cal-legend-compact{display:flex;gap:14px;font-size:11px;color:var(--ink-soft);margin-bottom:6px;flex-wrap:wrap;}
   .cal-legend-compact span{display:flex;align-items:center;gap:5px;}
@@ -189,7 +189,7 @@
   .perf-pct{font-family:'Fraunces';font-weight:600;font-size:16px;color:var(--ink);min-width:48px;text-align:right;flex-shrink:0;}
   .perf-legend span{display:flex;align-items:center;gap:5px;}
 
-  .overlay{position:fixed;inset:0;background:rgba(20,38,28,0.46);display:flex;align-items:flex-end;justify-content:center;z-index:50;}
+  .overlay{position:fixed;inset:0;background:rgba(14,28,20,0.5);display:flex;align-items:flex-end;justify-content:center;z-index:50;}
   .overlay.center{align-items:center;justify-content:center;}
   .modal{background:var(--surface);width:100%;max-width:520px;border-radius:20px 20px 0 0;padding:20px 20px calc(20px + env(safe-area-inset-bottom));max-height:88vh;overflow-y:auto;}
   @media (min-width:768px){ .overlay{align-items:center;} .modal{border-radius:18px;max-height:80vh;} }
@@ -1095,7 +1095,7 @@
         <div class="cal-legend-compact">
           <span><span class="legend-swatch" style="background:var(--active-day-bg)"></span>Active</span>
           <span><span class="legend-swatch" style="background:var(--surface-alt);border:1px solid var(--line)"></span>Inactive</span>
-          <span><span class="legend-swatch" style="background:#C7C7C2"></span>Sunday freeze</span>
+          <span><span class="legend-swatch" style="background:#8C8C87"></span>Sunday freeze</span>
           <span>Tap an active day for details</span>
         </div>
         <div class="streak-stats-compact">
