@@ -301,6 +301,7 @@
   let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [] };
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
+  let taskLinkProjectId = null;
   let view = "board";
   let mobileCol = "todo";
   let selectedDay = todayStr();
@@ -770,6 +771,25 @@
     return ms.length>0 && ms.every(m=>m.status==='complete');
   }
   function milestoneStatusLabel(s){ return {not_started:'Not started', in_progress:'In progress', awaiting_review:'Awaiting review', complete:'Complete'}[s] || s; }
+  function milestoneStatusCounts(pid){
+    const ms = milestonesForProject(pid);
+    const counts = {complete:0, awaiting_review:0, in_progress:0, not_started:0};
+    ms.forEach(m=>{ counts[m.status] = (counts[m.status]||0) + 1; });
+    return { counts, total: ms.length };
+  }
+  function projectRingGradient(counts, total){
+    if(!total) return 'var(--line)';
+    const order = [['complete','var(--done)'],['awaiting_review','var(--streak)'],['in_progress','var(--progress)'],['not_started','var(--line-strong)']];
+    let acc = 0, stops = [];
+    order.forEach(([key,color])=>{
+      const n = counts[key]||0;
+      if(!n) return;
+      const start = acc;
+      acc += (n/total)*100;
+      stops.push(`${color} ${start}% ${acc}%`);
+    });
+    return stops.length ? `conic-gradient(${stops.join(', ')})` : 'var(--line)';
+  }
   function milestoneChipClass(s){ return s==='complete' ? 'done' : (s==='awaiting_review' || s==='in_progress') ? 'progress' : 'todo'; }
   function milestoneName(mid){ const m = state.milestones.find(m=>m.id===mid); return m ? m.name : null; }
   function computeMilestoneBaseline(m){
@@ -1282,14 +1302,33 @@
         <button class="primary-btn" style="margin-top:8px;" data-create-project>Create project</button>
       </div>
       ${state.projects.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : state.projects.map(p=>{
-        const ms = milestonesForProject(p.id);
-        const complete = ms.filter(m=>m.status==='complete').length;
-        const pct = ms.length ? Math.round(complete/ms.length*100) : 0;
+        const { counts, total } = milestoneStatusCounts(p.id);
+        const pct = total ? Math.round((counts.complete/total)*100) : 0;
+        const ring = projectRingGradient(counts, total);
+        const rows = [
+          ['Complete', counts.complete, 'var(--done)'],
+          ['Awaiting review', counts.awaiting_review, 'var(--streak)'],
+          ['In progress', counts.in_progress, 'var(--progress)'],
+          ['Not started', counts.not_started, 'var(--line-strong)'],
+        ];
         return `
-        <button class="card" style="display:block;width:100%;margin-bottom:10px;border-left-color:${projectComplete(p.id)?'var(--done)':'var(--progress)'};" data-open-project="${p.id}">
-          <div class="title">${escapeHtml(p.name)}</div>
-          <div class="card-progress-track" style="margin-top:8px;"><div class="card-progress-fill" style="width:${pct}%;"></div></div>
-          <div class="meta" style="margin-top:6px;">${complete}/${ms.length} milestones complete${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Project complete</span>` : ''}</div>
+        <button class="card" style="display:flex;align-items:center;gap:20px;width:100%;margin-bottom:12px;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
+          <div style="position:relative;width:92px;height:92px;flex-shrink:0;">
+            <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
+            <div style="position:absolute;inset:13px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
+              <span class="serif" style="font-weight:600;font-size:19px;">${pct}%</span>
+            </div>
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div class="title" style="margin-bottom:2px;">${escapeHtml(p.name)}</div>
+            <div class="meta" style="margin-bottom:8px;">${total} milestone${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Project complete</span>` : ''}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px 14px;">
+              ${rows.filter(r=>r[1]>0).map(([label,count,color])=>`
+                <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);">
+                  <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;"></span>${label} <span style="color:var(--ink-faint);">${count}</span>
+                </span>`).join('')}
+            </div>
+          </div>
         </button>`;
       }).join('')}
     </div>`;
@@ -1507,6 +1546,8 @@
   function renderModal(t){
     if(!t) return '';
     const subDone = t.subtasks.filter(s=>s.done).length;
+    const linkedMilestone = t.milestoneId ? state.milestones.find(m=>m.id===t.milestoneId) : null;
+    const pickerProjectId = taskLinkProjectId !== null ? taskLinkProjectId : (linkedMilestone ? linkedMilestone.projectId : '');
     return `
     <div class="overlay" data-close-overlay>
       <div class="modal" data-stop>
@@ -1539,10 +1580,15 @@
         </div>
 
         <div class="section-label">Project / Milestone</div>
-        <select class="field-input" data-task-milestone="${t.id}">
+        <select class="field-input" style="margin-bottom:8px;" data-task-project-picker>
           <option value="">Not linked to a project</option>
-          ${state.projects.flatMap(p=>milestonesForProject(p.id).map(m=>`<option value="${m.id}" ${t.milestoneId===m.id?'selected':''}>${escapeHtml(p.name)} — ${escapeHtml(m.name)}</option>`)).join('')}
+          ${state.projects.map(p=>`<option value="${p.id}" ${pickerProjectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
         </select>
+        ${pickerProjectId ? `
+        <select class="field-input" data-task-milestone-picker="${t.id}">
+          <option value="">Choose a milestone…</option>
+          ${milestonesForProject(pickerProjectId).map(m=>`<option value="${m.id}" ${t.milestoneId===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+        </select>` : ''}
 
         <div class="section-label">Subtasks ${t.subtasks.length?`(${subDone}/${t.subtasks.length})`:''}</div>
         ${t.subtasks.map(s=>{
@@ -1646,13 +1692,13 @@
     const dueClearBtn = app.querySelector('[data-due-clear]');
     if(dueClearBtn) dueClearBtn.addEventListener('click', ()=>{ addTaskDueDate=null; keepDueOpen=true; render(); });
 
-    app.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click', ()=>{ openTaskId=b.dataset.open; editingSubtaskKey=null; dueDropdownOpen=false; render(); }));
+    app.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click', ()=>{ openTaskId=b.dataset.open; editingSubtaskKey=null; dueDropdownOpen=false; taskLinkProjectId=null; render(); }));
     const overlay = app.querySelector('[data-close-overlay]');
     if(overlay){
-      overlay.addEventListener('click', e=>{ if(e.target===overlay){ openTaskId=null; editingSubtaskKey=null; render(); } });
+      overlay.addEventListener('click', e=>{ if(e.target===overlay){ openTaskId=null; editingSubtaskKey=null; taskLinkProjectId=null; render(); } });
     }
     const closeBtn = app.querySelector('[data-close]');
-    if(closeBtn) closeBtn.addEventListener('click', ()=>{ openTaskId=null; editingSubtaskKey=null; render(); });
+    if(closeBtn) closeBtn.addEventListener('click', ()=>{ openTaskId=null; editingSubtaskKey=null; taskLinkProjectId=null; render(); });
 
     const titleInput = app.querySelector('[data-title]');
     if(titleInput) titleInput.addEventListener('change', ()=>updateTitle(openTaskId, titleInput.value));
@@ -1769,9 +1815,15 @@
     app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; render(); }));
     const backToProjectsBtn = app.querySelector('[data-back-to-projects]');
     if(backToProjectsBtn) backToProjectsBtn.addEventListener('click', ()=>{ selectedProjectId=null; render(); });
-    const taskMilestoneSelect = app.querySelector('[data-task-milestone]');
-    if(taskMilestoneSelect) taskMilestoneSelect.addEventListener('change', ()=>{
-      setTaskMilestone(taskMilestoneSelect.dataset.taskMilestone, taskMilestoneSelect.value);
+    const taskProjectPicker = app.querySelector('[data-task-project-picker]');
+    if(taskProjectPicker) taskProjectPicker.addEventListener('change', ()=>{
+      taskLinkProjectId = taskProjectPicker.value;
+      if(!taskProjectPicker.value) setTaskMilestone(openTaskId, null);
+      render();
+    });
+    const taskMilestonePicker = app.querySelector('[data-task-milestone-picker]');
+    if(taskMilestonePicker) taskMilestonePicker.addEventListener('change', ()=>{
+      setTaskMilestone(taskMilestonePicker.dataset.taskMilestonePicker, taskMilestonePicker.value || null);
     });
 
     const exportBtn = app.querySelector('[data-export-data]');
