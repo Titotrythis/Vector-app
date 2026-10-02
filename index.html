@@ -6,43 +6,43 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Vector">
-<meta name="theme-color" content="#FAF9F6">
+<meta name="theme-color" content="#EFEAE1">
 <title>Vector — Direction with Intent</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg: #FAF9F6;
-    --bg-deep: #DCE8D3;
+    --bg: #EFEAE1;
+    --bg-deep: #E6DFCF;
     --surface: #FFFFFF;
-    --surface-alt: #F2F7EE;
-    --ink: #1E4733;
-    --ink-soft: #4C6B57;
-    --ink-faint: #8AA393;
-    --line: #D3E3CA;
-    --line-strong: #B7D1AA;
+    --surface-alt: #F6F2E8;
+    --ink: #23252B;
+    --ink-soft: #62636B;
+    --ink-faint: #97968D;
+    --line: #DCD4C1;
+    --line-strong: #C7BCA2;
     --todo: #5B6472;
     --todo-bg: #E9EBEE;
-    --progress: #6FA345;
-    --progress-bg: #E4F0DB;
-    --done: #1E4733;
-    --done-bg: #DDE9D6;
+    --progress: #B96A20;
+    --progress-bg: #F5E3CB;
+    --done: #3F7D58;
+    --done-bg: #DEEBE1;
     --suspended: #6B5B95;
     --suspended-bg: #E7E1F0;
     --streak: #B68A16;
     --streak-bg: #F3E8C6;
-    --active-day-bg: #C9DFC0;
-    --active-day-fg: #1E4733;
+    --active-day-bg: #BFE3C4;
+    --active-day-fg: #1F5C33;
     --danger: #A6412A;
     --pri-none: #3B6FA8;
-    --pri-low: #6FA345;
+    --pri-low: #4C8C5B;
     --pri-high: #C98A2E;
     --pri-veryhigh: #B23B2E;
     --pri-urgent: #C81E3A;
     --radius: 10px;
     --radius-lg: 16px;
-    --shadow-card: 0 1px 0 rgba(30,71,51,0.06), 0 1px 3px rgba(30,71,51,0.08);
+    --shadow-card: 0 1px 0 rgba(35,37,43,0.06), 0 1px 3px rgba(35,37,43,0.08);
   }
   *{box-sizing:border-box;}
   html,body{height:100%;}
@@ -189,7 +189,7 @@
   .perf-pct{font-family:'Fraunces';font-weight:600;font-size:16px;color:var(--ink);min-width:48px;text-align:right;flex-shrink:0;}
   .perf-legend span{display:flex;align-items:center;gap:5px;}
 
-  .overlay{position:fixed;inset:0;background:rgba(20,38,28,0.46);display:flex;align-items:flex-end;justify-content:center;z-index:50;}
+  .overlay{position:fixed;inset:0;background:rgba(35,32,26,0.42);display:flex;align-items:flex-end;justify-content:center;z-index:50;}
   .overlay.center{align-items:center;justify-content:center;}
   .modal{background:var(--surface);width:100%;max-width:520px;border-radius:20px 20px 0 0;padding:20px 20px calc(20px + env(safe-area-inset-bottom));max-height:88vh;overflow-y:auto;}
   @media (min-width:768px){ .overlay{align-items:center;} .modal{border-radius:18px;max-height:80vh;} }
@@ -1001,9 +1001,9 @@
         </div>
         <div class="current-user-badge"><span class="user-avatar">${escapeHtml(initialsFor(currentUserName()))}</span>${escapeHtml(currentUserName())}<button class="logout-btn" data-logout>sign out</button></div>
         <div class="nav-tabs">
+          <button data-nav="projects" class="${view==='projects'?'active':''}">Projects</button>
           <button data-nav="board" class="${view==='board'?'active':''}">Board</button>
           <button data-nav="calendar" class="${view==='calendar'?'active':''}">Calendar</button>
-          <button data-nav="projects" class="${view==='projects'?'active':''}">Projects</button>
           <button data-nav="trash" class="${view==='trash'?'active':''}">Trash</button>
           <button data-nav="dashboard" class="${view==='dashboard'?'active':''}">Dashboard</button>
         </div>
@@ -1471,9 +1471,9 @@
   function renderTabbar(){
     return `
     <div class="tabbar">
+      <button data-nav="projects" class="${view==='projects'?'active':''}">${ICONS.projects}Projects</button>
       <button data-nav="board" class="${view==='board'?'active':''}">${ICONS.board}Board</button>
       <button data-nav="calendar" class="${view==='calendar'?'active':''}">${ICONS.cal}Calendar</button>
-      <button data-nav="projects" class="${view==='projects'?'active':''}">${ICONS.projects}Projects</button>
       <button data-nav="trash" class="${view==='trash'?'active':''}">${ICONS.trash}Trash</button>
       <button data-nav="dashboard" class="${view==='dashboard'?'active':''}">${ICONS.chart}Dashboard</button>
     </div>`;
