@@ -292,12 +292,15 @@
     cal: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/></svg>`,
     chart: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="21" x2="5" y2="11"/><line x1="12" y1="21" x2="12" y2="6"/><line x1="19" y1="21" x2="19" y2="14"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 012-2h2a2 2 0 012 2v2"/></svg>`,
+    projects: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
   };
 
   const POMODORO_SEC = 25*60;
   const PRIORITIES = ['urgent','veryhigh','high','low'];
 
-  let state = { tasks: [], trash: [], auditLog: [], profiles: [] };
+  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [] };
+  const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
+  let selectedProjectId = null;
   let view = "board";
   let mobileCol = "todo";
   let selectedDay = todayStr();
@@ -442,6 +445,7 @@
       createdByUserId: row.created_by,
       completedBy: profileName(row.completed_by),
       completedByUserId: row.completed_by,
+      milestoneId: row.milestone_id,
       timer: { elapsed: Number(row.timer_elapsed_ms)||0, running: !!row.timer_running, startedAt: row.timer_started_at ? new Date(row.timer_started_at).getTime() : null },
       suspendedMs: Number(row.suspended_ms)||0,
       suspendStartedAt: row.suspend_started_at ? new Date(row.suspend_started_at).getTime() : null,
@@ -460,18 +464,23 @@
   async function reloadAllData(){
     if(reloadInFlight) return reloadInFlight;
     reloadInFlight = (async ()=>{
-      const [profilesRes, tasksRes, auditRes] = await Promise.all([
+      const [profilesRes, tasksRes, auditRes, projectsRes, milestonesRes] = await Promise.all([
         sb.from('profiles').select('*'),
         sb.from('tasks').select('*, subtasks(*)').order('created_at', {ascending:true}),
         sb.from('audit_log').select('*').order('created_at', {ascending:true}),
+        sb.from('projects').select('*').order('created_at', {ascending:true}),
+        sb.from('milestones').select('*').order('position', {ascending:true}),
       ]);
-      const err = profilesRes.error || tasksRes.error || auditRes.error;
+      const err = profilesRes.error || tasksRes.error || auditRes.error || projectsRes.error || milestonesRes.error;
       if(err){ appError = err.message; render(); reloadInFlight = null; return; }
       state.profiles = profilesRes.data || [];
       const taskRows = tasksRes.data || [];
       state.tasks = taskRows.filter(r=>!r.deleted).map(taskFromRow);
       state.trash = taskRows.filter(r=>r.deleted).map(taskFromRow);
       state.auditLog = (auditRes.data || []).map(auditFromRow);
+      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at }));
+      state.milestones = (milestonesRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, name:r.name, position:r.position, status:r.status }));
+      await reconcileMilestones();
       render();
       reloadInFlight = null;
     })();
@@ -488,6 +497,8 @@
       .on('postgres_changes', {event:'*', schema:'public', table:'subtasks'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'audit_log'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'profiles'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'projects'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'milestones'}, scheduleReload)
       .subscribe();
   }
   function teardownRealtime(){
@@ -747,6 +758,83 @@
     return map;
   }
 
+  /* ---------------- Projects & Milestones ---------------- */
+  function canReviewMilestones(){
+    const p = state.profiles.find(p=>p.id===currentUserId());
+    return !!(p && p.can_review_milestones);
+  }
+  function milestonesForProject(pid){ return state.milestones.filter(m=>m.projectId===pid).sort((a,b)=>a.position-b.position); }
+  function tasksForMilestone(mid){ return state.tasks.filter(t=>t.milestoneId===mid); }
+  function projectComplete(pid){
+    const ms = milestonesForProject(pid);
+    return ms.length>0 && ms.every(m=>m.status==='complete');
+  }
+  function milestoneStatusLabel(s){ return {not_started:'Not started', in_progress:'In progress', awaiting_review:'Awaiting review', complete:'Complete'}[s] || s; }
+  function milestoneChipClass(s){ return s==='complete' ? 'done' : (s==='awaiting_review' || s==='in_progress') ? 'progress' : 'todo'; }
+  function milestoneName(mid){ const m = state.milestones.find(m=>m.id===mid); return m ? m.name : null; }
+  function computeMilestoneBaseline(m){
+    const linked = tasksForMilestone(m.id);
+    if(linked.length===0) return 'not_started';
+    if(linked.every(t=>t.status==='done')) return 'all_done';
+    const anyTouched = linked.some(t=>t.status!=='todo');
+    return anyTouched ? 'in_progress' : 'not_started';
+  }
+  async function reconcileMilestones(){
+    const writes = [];
+    state.milestones.forEach(m=>{
+      const baseline = computeMilestoneBaseline(m);
+      let target = m.status;
+      if(baseline==='all_done'){
+        if(m.status!=='complete') target = 'awaiting_review';
+      } else {
+        target = baseline;
+      }
+      if(target !== m.status){
+        m.status = target;
+        writes.push(sb.from('milestones').update({status:target}).eq('id', m.id));
+      }
+    });
+    if(writes.length) await Promise.all(writes);
+  }
+  async function createProject(name){
+    name = (name||'').trim(); if(!name) return;
+    const { data, error } = await sb.from('projects').insert({ name, description:'', created_by: currentUserId() }).select().single();
+    if(error){ appError=error.message; render(); return; }
+    const rows = DEFAULT_MILESTONE_NAMES.map((n,i)=>({ project_id:data.id, name:n, position:i, status:'not_started' }));
+    const { error: mErr } = await sb.from('milestones').insert(rows);
+    if(mErr){ appError=mErr.message; }
+    else appError = null;
+    await reloadAllData();
+  }
+  async function addMilestone(projectId, name){
+    name = (name||'').trim(); if(!name) return;
+    const existing = milestonesForProject(projectId);
+    await runMutation(()=> sb.from('milestones').insert({ project_id:projectId, name, position:existing.length, status:'not_started' }));
+  }
+  async function deleteMilestone(id){
+    if(tasksForMilestone(id).length>0){ appError = "Can't delete a milestone that still has linked tasks — unlink or move them first."; render(); return; }
+    await runMutation(()=> sb.from('milestones').delete().eq('id', id));
+  }
+  async function createTaskForMilestone(milestoneId, title){
+    title = (title||'').trim(); if(!title) return;
+    await runMutation(()=> sb.from('tasks').insert({ title, day: todayStr(), status:'todo', notes:'', priority:'low', created_by: currentUserId(), milestone_id: milestoneId }));
+  }
+  async function setTaskMilestone(taskId, milestoneId){
+    await runMutation(()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId));
+  }
+  async function approveMilestone(id, reason){
+    const { error } = await sb.rpc('approve_milestone', { p_milestone_id:id, p_reason:reason });
+    if(error){ appError=error.message; render(); return; }
+    appError = null;
+    await reloadAllData();
+  }
+  async function rejectMilestone(id, reason){
+    const { error } = await sb.rpc('reject_milestone', { p_milestone_id:id, p_reason:reason });
+    if(error){ appError=error.message; render(); return; }
+    appError = null;
+    await reloadAllData();
+  }
+
   /* ---------------- Render root ---------------- */
   function render(){
     const app = document.getElementById('app');
@@ -764,6 +852,7 @@
         ${view==='board' ? renderBoard(isPhone) : ''}
         ${view==='calendar' ? renderCalendar() : ''}
         ${view==='trash' ? renderTrash() : ''}
+        ${view==='projects' ? (selectedProjectId ? renderProjectDetail(selectedProjectId) : renderProjectsList()) : ''}
         ${view==='dashboard' ? renderDashboard() : ''}
       </main>
       ${isPhone ? renderTabbar() : ''}
@@ -914,6 +1003,7 @@
         <div class="nav-tabs">
           <button data-nav="board" class="${view==='board'?'active':''}">Board</button>
           <button data-nav="calendar" class="${view==='calendar'?'active':''}">Calendar</button>
+          <button data-nav="projects" class="${view==='projects'?'active':''}">Projects</button>
           <button data-nav="trash" class="${view==='trash'?'active':''}">Trash</button>
           <button data-nav="dashboard" class="${view==='dashboard'?'active':''}">Dashboard</button>
         </div>
@@ -1050,6 +1140,7 @@
         ${t.subtasks.length ? `<span>${subDone}/${t.subtasks.length} subtasks</span>` : ''}
         ${t.notes ? `<span>note</span>` : ''}
         ${t.dueDate ? `<span>due ${t.dueDate}</span>` : ''}
+        ${t.milestoneId ? `<span>${escapeHtml(milestoneName(t.milestoneId) || '')}</span>` : ''}
         <span>by ${escapeHtml(t.createdBy)}</span>
       </div>
       ${t.subtasks.length ? `<div class="card-progress-track"><div class="card-progress-fill" style="width:${Math.round((subDone/t.subtasks.length)*100)}%;"></div></div>` : ''}
@@ -1175,6 +1266,78 @@
           <div class="meta">${t.deletedAt ? new Date(t.deletedAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''}</div>
           <button class="primary-btn" style="margin-top:10px;" data-action="restore" data-taskid="${t.id}">Restore</button>
         </div>`).join('')}
+    </div>`;
+  }
+
+  /* ---------------- Projects view ---------------- */
+  function renderProjectsList(){
+    return `
+    <div class="dash-wrap">
+      <div class="chart-card">
+        <h3>New project</h3>
+        <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">Every project starts with 5 milestones — Define, Measure, Analyze, Improve, Control — which you can rename, reorder, add to, or remove afterward.</p>
+        <div class="add-row" style="margin-bottom:0;">
+          <input type="text" placeholder="Project name…" data-new-project-name />
+        </div>
+        <button class="primary-btn" style="margin-top:8px;" data-create-project>Create project</button>
+      </div>
+      ${state.projects.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : state.projects.map(p=>{
+        const ms = milestonesForProject(p.id);
+        const complete = ms.filter(m=>m.status==='complete').length;
+        const pct = ms.length ? Math.round(complete/ms.length*100) : 0;
+        return `
+        <button class="card" style="display:block;width:100%;margin-bottom:10px;border-left-color:${projectComplete(p.id)?'var(--done)':'var(--progress)'};" data-open-project="${p.id}">
+          <div class="title">${escapeHtml(p.name)}</div>
+          <div class="card-progress-track" style="margin-top:8px;"><div class="card-progress-fill" style="width:${pct}%;"></div></div>
+          <div class="meta" style="margin-top:6px;">${complete}/${ms.length} milestones complete${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Project complete</span>` : ''}</div>
+        </button>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function renderMilestoneCard(m){
+    const tasks = tasksForMilestone(m.id);
+    const done = tasks.filter(t=>t.status==='done').length;
+    const pct = tasks.length ? Math.round(done/tasks.length*100) : 0;
+    const canReview = canReviewMilestones();
+    return `
+    <div class="chart-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+        <h3 style="margin:0;">${escapeHtml(m.name)}</h3>
+        <span class="status-chip ${milestoneChipClass(m.status)}">${milestoneStatusLabel(m.status)}</span>
+      </div>
+      <div class="card-progress-track" style="margin-top:10px;"><div class="card-progress-fill" style="width:${pct}%;"></div></div>
+      <div class="meta" style="margin-top:6px;">${done}/${tasks.length} task${tasks.length===1?'':'s'} done</div>
+      ${tasks.length>0 ? `<div class="log-list" style="margin-top:10px;">${tasks.map(t=>`<div class="log-item" style="cursor:pointer;" data-open="${t.id}"><div class="log-item-title">${escapeHtml(t.title)}</div><div class="log-item-time">${statusLabel(t.status)}</div></div>`).join('')}</div>` : ''}
+      <div class="add-sub"><input type="text" placeholder="Add a task to this milestone…" data-add-milestone-task="${m.id}" /></div>
+      ${m.status==='awaiting_review' && canReview ? `
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button class="primary-btn" data-action="milestone_approve" data-taskid="${m.id}">Approve</button>
+          <button class="primary-btn" style="background:var(--danger);" data-action="milestone_reject" data-taskid="${m.id}">Reject</button>
+        </div>` : ''}
+      ${m.status==='awaiting_review' && !canReview ? `<p style="font-size:11.5px;color:var(--ink-faint);margin-top:10px;">Awaiting sign-off from a Journey Architect.</p>` : ''}
+      <button class="del" style="margin-top:10px;background:none;border:none;color:var(--ink-faint);font-size:11.5px;" data-delete-milestone="${m.id}">Delete milestone</button>
+    </div>`;
+  }
+
+  function renderProjectDetail(pid){
+    const project = state.projects.find(p=>p.id===pid);
+    if(!project) return `<div class="dash-wrap"><p style="color:var(--ink-faint);">Project not found.</p></div>`;
+    const ms = milestonesForProject(pid);
+    return `
+    <div class="dash-wrap">
+      <button class="logout-btn" style="margin-bottom:12px;" data-back-to-projects>&larr; All projects</button>
+      <div class="chart-card">
+        <h3 style="margin-bottom:4px;">${escapeHtml(project.name)}</h3>
+        ${projectComplete(pid) ? `<p style="color:var(--done);font-weight:600;font-size:13px;margin:4px 0 0;">✓ Project complete</p>` : ''}
+      </div>
+      ${ms.map(m=>renderMilestoneCard(m)).join('')}
+      <div class="chart-card">
+        <h3>Add milestone</h3>
+        <div class="add-row" style="margin-bottom:0;">
+          <input type="text" placeholder="Milestone name…" data-new-milestone-name="${pid}" />
+        </div>
+      </div>
     </div>`;
   }
 
@@ -1310,6 +1473,7 @@
     <div class="tabbar">
       <button data-nav="board" class="${view==='board'?'active':''}">${ICONS.board}Board</button>
       <button data-nav="calendar" class="${view==='calendar'?'active':''}">${ICONS.cal}Calendar</button>
+      <button data-nav="projects" class="${view==='projects'?'active':''}">${ICONS.projects}Projects</button>
       <button data-nav="trash" class="${view==='trash'?'active':''}">${ICONS.trash}Trash</button>
       <button data-nav="dashboard" class="${view==='dashboard'?'active':''}">${ICONS.chart}Dashboard</button>
     </div>`;
@@ -1374,6 +1538,12 @@
           ${PRIORITIES.map(p=>`<button class="pri-btn ${((t.priority||'low')===p)?'active':''}" style="--pc:${priorityColor(p)};" data-priority="${t.id}|${p}">${priorityLabel(p)}</button>`).join('')}
         </div>
 
+        <div class="section-label">Project / Milestone</div>
+        <select class="field-input" data-task-milestone="${t.id}">
+          <option value="">Not linked to a project</option>
+          ${state.projects.flatMap(p=>milestonesForProject(p.id).map(m=>`<option value="${m.id}" ${t.milestoneId===m.id?'selected':''}>${escapeHtml(p.name)} — ${escapeHtml(m.name)}</option>`)).join('')}
+        </select>
+
         <div class="section-label">Subtasks ${t.subtasks.length?`(${subDone}/${t.subtasks.length})`:''}</div>
         ${t.subtasks.map(s=>{
           const key = t.id+'|'+s.id;
@@ -1398,13 +1568,16 @@
     </div>`;
   }
 
-  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task'};
-  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore'};
-  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring'};
+  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone'};
+  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject'};
+  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting'};
 
   function renderActionDialog(){
     const type = pendingAction.type;
-    const t = type==='restore' ? state.trash.find(x=>x.id===pendingAction.taskId) : getTask(pendingAction.taskId);
+    const isMilestoneAction = type==='milestone_approve' || type==='milestone_reject';
+    const t = type==='restore' ? state.trash.find(x=>x.id===pendingAction.taskId)
+      : isMilestoneAction ? state.milestones.find(x=>x.id===pendingAction.taskId)
+      : getTask(pendingAction.taskId);
     return `
     <div class="overlay" data-close-action>
       <div class="modal" data-stop>
@@ -1412,7 +1585,7 @@
           <h3 class="serif" style="margin:0;font-size:19px;">${ACTION_TITLES[type]}</h3>
           <button class="icon-btn" data-cancel-action>${ICONS.x}</button>
         </div>
-        <p style="font-size:13px;color:var(--ink-soft);margin-top:2px;">${escapeHtml(t ? t.title : '')}</p>
+        <p style="font-size:13px;color:var(--ink-soft);margin-top:2px;">${escapeHtml(t ? (t.title || t.name || '') : '')}</p>
         <div class="section-label">Reason</div>
         <textarea class="notes" data-action-reason placeholder="Why are you ${ACTION_VERB[type]} this task?"></textarea>
         <div class="current-user-badge" style="margin-top:10px;"><span class="user-avatar">${escapeHtml(initialsFor(currentUserName()))}</span>${escapeHtml(currentUserName())}</div>
@@ -1434,7 +1607,7 @@
 
     app.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ taskFilter=b.dataset.filter; render(); }));
 
-    app.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{ view=b.dataset.nav; selectedSummaryDay=null; dueDropdownOpen=false; render(); }));
+    app.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{ view=b.dataset.nav; selectedSummaryDay=null; dueDropdownOpen=false; selectedProjectId=null; render(); }));
     app.querySelectorAll('[data-day]').forEach(b=>b.addEventListener('click', ()=>{
       const n = parseInt(b.dataset.day,10);
       selectedDay = n===0 ? todayStr() : addDays(selectedDay, n);
@@ -1520,6 +1693,8 @@
         if(type==='resume') resumeTaskWithLog(taskId, reason, username);
         if(type==='suspend') suspendTaskWithLog(taskId, reason, username);
         if(type==='restore') restoreTaskWithLog(taskId, reason, username);
+        if(type==='milestone_approve') approveMilestone(taskId, reason);
+        if(type==='milestone_reject') rejectMilestone(taskId, reason);
         pendingAction=null; openTaskId=null; render();
       });
     }
@@ -1577,6 +1752,27 @@
       futurePickerOpen = false;
       render();
     }));
+
+    const createProjectBtn = app.querySelector('[data-create-project]');
+    if(createProjectBtn) createProjectBtn.addEventListener('click', ()=>{
+      const input = app.querySelector('[data-new-project-name]');
+      if(input) createProject(input.value);
+    });
+    const newProjectInput = app.querySelector('[data-new-project-name]');
+    if(newProjectInput) newProjectInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ createProject(newProjectInput.value); } });
+    const newMilestoneInput = app.querySelector('[data-new-milestone-name]');
+    if(newMilestoneInput) newMilestoneInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ addMilestone(newMilestoneInput.dataset.newMilestoneName, newMilestoneInput.value); } });
+    app.querySelectorAll('[data-add-milestone-task]').forEach(inp=>inp.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
+    }));
+    app.querySelectorAll('[data-delete-milestone]').forEach(b=>b.addEventListener('click', ()=>{ deleteMilestone(b.dataset.deleteMilestone); }));
+    app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; render(); }));
+    const backToProjectsBtn = app.querySelector('[data-back-to-projects]');
+    if(backToProjectsBtn) backToProjectsBtn.addEventListener('click', ()=>{ selectedProjectId=null; render(); });
+    const taskMilestoneSelect = app.querySelector('[data-task-milestone]');
+    if(taskMilestoneSelect) taskMilestoneSelect.addEventListener('change', ()=>{
+      setTaskMilestone(taskMilestoneSelect.dataset.taskMilestone, taskMilestoneSelect.value);
+    });
 
     const exportBtn = app.querySelector('[data-export-data]');
     if(exportBtn) exportBtn.addEventListener('click', ()=>{
