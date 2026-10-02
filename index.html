@@ -440,6 +440,8 @@
       dueDate: row.due_date,
       createdBy: profileName(row.created_by),
       createdByUserId: row.created_by,
+      completedBy: profileName(row.completed_by),
+      completedByUserId: row.completed_by,
       timer: { elapsed: Number(row.timer_elapsed_ms)||0, running: !!row.timer_running, startedAt: row.timer_started_at ? new Date(row.timer_started_at).getTime() : null },
       suspendedMs: Number(row.suspended_ms)||0,
       suspendStartedAt: row.suspend_started_at ? new Date(row.suspend_started_at).getTime() : null,
@@ -562,7 +564,7 @@
     const t = getTask(id); if(!t || t.status==='done') return;
     const elapsed = computeElapsed(t);
     if(openTaskId===id) openTaskId=null;
-    await runMutation(()=> sb.from('tasks').update({ status:'done', completed_at:new Date().toISOString(), timer_running:false, timer_started_at:null, timer_elapsed_ms:elapsed }).eq('id', id));
+    await runMutation(()=> sb.from('tasks').update({ status:'done', completed_at:new Date().toISOString(), completed_by: currentUserId(), timer_running:false, timer_started_at:null, timer_elapsed_ms:elapsed }).eq('id', id));
   }
   async function setPriority(id, p){
     await runMutation(()=> sb.from('tasks').update({priority:p}).eq('id', id));
@@ -594,7 +596,7 @@
   }
   async function reopenTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
-    const { error } = await sb.from('tasks').update({ status:'progress', completed_at:null, timer_running:true, timer_started_at:new Date().toISOString() }).eq('id', id);
+    const { error } = await sb.from('tasks').update({ status:'progress', completed_at:null, completed_by:null, timer_running:true, timer_started_at:new Date().toISOString() }).eq('id', id);
     if(error){ appError=error.message; render(); return; }
     await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'reopen', reason, user_id: currentUserId() });
     appError = null;
@@ -651,10 +653,10 @@
       const allDone = freshT.subtasks.length>0 && freshT.subtasks.every(s=>s.done);
       if(allDone && freshT.status!=='done'){
         if(openTaskId===taskId) openTaskId=null;
-        await sb.from('tasks').update({status:'done', completed_at:new Date().toISOString(), timer_running:false, timer_elapsed_ms: computeElapsed(freshT)}).eq('id', taskId);
+        await sb.from('tasks').update({status:'done', completed_at:new Date().toISOString(), completed_by: currentUserId(), timer_running:false, timer_elapsed_ms: computeElapsed(freshT)}).eq('id', taskId);
         await reloadAllData();
       } else if(!allDone && freshT.status==='done'){
-        await sb.from('tasks').update({status:'progress', completed_at:null, timer_running:true, timer_started_at:new Date().toISOString()}).eq('id', taskId);
+        await sb.from('tasks').update({status:'progress', completed_at:null, completed_by:null, timer_running:true, timer_started_at:new Date().toISOString()}).eq('id', taskId);
         await reloadAllData();
       }
     }
@@ -676,12 +678,10 @@
     const uid = currentUserId();
     const set = new Set();
     state.tasks.concat(state.trash).forEach(t=>{
-      if(t.createdByUserId===uid){
-        set.add(dateToStr(new Date(t.createdAt)));
-        if(t.completedAt) set.add(dateToStr(new Date(t.completedAt)));
-      }
+      if(!t.completedAt) return;
+      if(taskFilter==='mine' && t.completedByUserId!==uid) return;
+      set.add(dateToStr(new Date(t.completedAt)));
     });
-    state.auditLog.forEach(e=>{ if(e.userId===uid) set.add(dateToStr(new Date(e.timestamp))); });
     return set;
   }
   function currentStreak(){
@@ -1137,7 +1137,9 @@
   }
 
   function renderDaySummary(ds){
-    const tasks = state.tasks.filter(t => t.completedAt && dateToStr(new Date(t.completedAt))===ds);
+    const uid = currentUserId();
+    let tasks = state.tasks.filter(t => t.completedAt && dateToStr(new Date(t.completedAt))===ds);
+    if(taskFilter==='mine') tasks = tasks.filter(t => t.completedByUserId===uid);
     const label = strToDate(ds).toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'});
     return `
     <div class="overlay center" data-close-summary>
@@ -1148,7 +1150,11 @@
         </div>
         ${tasks.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);margin-top:10px;">No tasks completed this day.</p>` : `
         <ul class="summary-list">
-          ${tasks.map(t=>`<li>${escapeHtml(t.title)}
+          ${tasks.map(t=>`<li>
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+              <span>${escapeHtml(t.title)}</span>
+              ${taskFilter==='all' ? `<span style="font-size:10.5px;color:var(--ink-faint);flex-shrink:0;">${escapeHtml(t.completedBy||'Unknown')}</span>` : ''}
+            </div>
             ${t.subtasks.length ? `<ul>${t.subtasks.map(s=>`<li>${escapeHtml(s.text)}</li>`).join('')}</ul>` : ''}
           </li>`).join('')}
         </ul>`}
