@@ -492,7 +492,7 @@
       }
       state.risks = (risksRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status }));
       state.blockers = (blockersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status }));
-      state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status }));
+      state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status, closedBy: profileName(r.closed_by) }));
       await reconcileMilestones();
       render();
       reloadInFlight = null;
@@ -914,7 +914,12 @@
     await runMutation(()=> sb.from('executive_actions').insert({ project_id:projectId, title, due_date: dueDate||null, owner: currentUserName(), created_by: currentUserId() }));
   }
   async function closeExecutiveAction(id){
-    await runMutation(()=> sb.from('executive_actions').update({ status:'closed', closed_at:new Date().toISOString() }).eq('id', id));
+    const a = state.executiveActions.find(x=>x.id===id); if(!a) return;
+    const { error } = await sb.from('executive_actions').update({ status:'closed', closed_at:new Date().toISOString(), closed_by: currentUserId() }).eq('id', id);
+    if(error){ appError=error.message; render(); return; }
+    await sb.from('audit_log').insert({ executive_action_id:id, task_title:a.title, action:'close_executive_action', reason:'', user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
   async function setProjectForecastDate(id, date){
     await runMutation(()=> sb.from('projects').update({ forecast_completion_date: date||null }).eq('id', id));
@@ -1373,7 +1378,7 @@
     return `
     <div class="dash-wrap">
       <div class="filter-toggle" style="margin-bottom:4px;width:max-content;">
-        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Practitioner</button>
+        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Lead</button>
         <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
       </div>
       ${executiveView && execActionsCount>0 ? `
@@ -1490,7 +1495,7 @@
     <div class="dash-wrap">
       <button class="logout-btn" style="margin-bottom:12px;" data-back-to-projects>&larr; All projects</button>
       <div class="filter-toggle" style="margin-bottom:4px;width:max-content;">
-        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Practitioner</button>
+        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Lead</button>
         <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
       </div>
       ${executiveView ? `
@@ -1519,13 +1524,14 @@
         <div class="section-label" style="margin:16px 0 6px;">Forecast completion date</div>
         <input type="date" class="field-input" style="max-width:220px;" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
       </div>`}
+      ${executiveView ? '' : `
       ${ms.map(m=>renderMilestoneCard(m)).join('')}
       <div class="chart-card">
         <h3>Add milestone</h3>
         <div class="add-row" style="margin-bottom:0;">
           <input type="text" placeholder="Milestone name…" data-new-milestone-name="${pid}" />
         </div>
-      </div>
+      </div>`}
 
       <div class="chart-card">
         <h3>Blockers</h3>
@@ -1581,7 +1587,7 @@
           <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;opacity:.6;">
             <div style="flex:1;min-width:0;">
               <div style="font-size:14px;font-weight:600;margin-bottom:3px;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(a.title)}</div>
-              <div style="font-size:11.5px;color:var(--ink-faint);">Closed · was owned by ${escapeHtml(a.owner||'—')}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">Closed by ${escapeHtml(a.closedBy||'Unknown')} · was owned by ${escapeHtml(a.owner||'—')}</div>
             </div>
           </div>`).join('')}
         </div>`}
