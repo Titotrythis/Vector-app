@@ -298,7 +298,7 @@
   const POMODORO_SEC = 25*60;
   const PRIORITIES = ['urgent','veryhigh','high','low'];
 
-  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [] };
+  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [] };
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
   let taskLinkProjectId = null;
@@ -479,8 +479,19 @@
       state.tasks = taskRows.filter(r=>!r.deleted).map(taskFromRow);
       state.trash = taskRows.filter(r=>r.deleted).map(taskFromRow);
       state.auditLog = (auditRes.data || []).map(auditFromRow);
-      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at }));
+      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date }));
       state.milestones = (milestonesRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, name:r.name, position:r.position, status:r.status }));
+      const [risksRes, blockersRes, actionsRes] = await Promise.all([
+        sb.from('risks').select('*').order('created_at', {ascending:true}),
+        sb.from('blockers').select('*').order('created_at', {ascending:true}),
+        sb.from('executive_actions').select('*').order('created_at', {ascending:true}),
+      ]);
+      if(risksRes.error || blockersRes.error || actionsRes.error){
+        appError = (risksRes.error || blockersRes.error || actionsRes.error).message; render(); reloadInFlight = null; return;
+      }
+      state.risks = (risksRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status }));
+      state.blockers = (blockersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status }));
+      state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status }));
       await reconcileMilestones();
       render();
       reloadInFlight = null;
@@ -500,6 +511,9 @@
       .on('postgres_changes', {event:'*', schema:'public', table:'profiles'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'projects'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'milestones'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'risks'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'blockers'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'executive_actions'}, scheduleReload)
       .subscribe();
   }
   function teardownRealtime(){
@@ -842,6 +856,38 @@
   async function setTaskMilestone(taskId, milestoneId){
     await runMutation(()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId));
   }
+  /* ---------------- Risks, Blockers, Executive Actions ---------------- */
+  function risksForProject(pid){ return state.risks.filter(r=>r.projectId===pid); }
+  function blockersForProject(pid){ return state.blockers.filter(b=>b.projectId===pid); }
+  function actionsForProject(pid){ return state.executiveActions.filter(a=>a.projectId===pid); }
+  function severityColor(s){ return s==='critical'?'var(--pri-urgent)': s==='high'?'var(--pri-veryhigh)': s==='low'?'var(--pri-low)':'var(--pri-high)'; }
+  function severityLabel(s){ return s==='critical'?'Critical': s==='high'?'High': s==='low'?'Low':'Medium'; }
+
+  async function createRisk(projectId, title, severity){
+    title=(title||'').trim(); if(!title) return;
+    await runMutation(()=> sb.from('risks').insert({ project_id:projectId, title, severity: severity||'medium', created_by: currentUserId() }));
+  }
+  async function resolveRisk(id){
+    await runMutation(()=> sb.from('risks').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('id', id));
+  }
+  async function createBlocker(projectId, title, severity){
+    title=(title||'').trim(); if(!title) return;
+    await runMutation(()=> sb.from('blockers').insert({ project_id:projectId, title, severity: severity||'medium', owner: currentUserName(), created_by: currentUserId() }));
+  }
+  async function resolveBlocker(id){
+    await runMutation(()=> sb.from('blockers').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('id', id));
+  }
+  async function createExecutiveAction(projectId, title, dueDate){
+    title=(title||'').trim(); if(!title) return;
+    await runMutation(()=> sb.from('executive_actions').insert({ project_id:projectId, title, due_date: dueDate||null, owner: currentUserName(), created_by: currentUserId() }));
+  }
+  async function closeExecutiveAction(id){
+    await runMutation(()=> sb.from('executive_actions').update({ status:'closed', closed_at:new Date().toISOString() }).eq('id', id));
+  }
+  async function setProjectForecastDate(id, date){
+    await runMutation(()=> sb.from('projects').update({ forecast_completion_date: date||null }).eq('id', id));
+  }
+
   async function approveMilestone(id, reason){
     const { error } = await sb.rpc('approve_milestone', { p_milestone_id:id, p_reason:reason });
     if(error){ appError=error.message; render(); return; }
@@ -1363,12 +1409,20 @@
     const project = state.projects.find(p=>p.id===pid);
     if(!project) return `<div class="dash-wrap"><p style="color:var(--ink-faint);">Project not found.</p></div>`;
     const ms = milestonesForProject(pid);
+    const openRisks = risksForProject(pid).filter(r=>r.status==='open');
+    const resolvedRisks = risksForProject(pid).filter(r=>r.status==='resolved');
+    const openBlockers = blockersForProject(pid).filter(b=>b.status==='open');
+    const resolvedBlockers = blockersForProject(pid).filter(b=>b.status==='resolved');
+    const openActions = actionsForProject(pid).filter(a=>a.status==='open');
+    const closedActions = actionsForProject(pid).filter(a=>a.status==='closed');
     return `
     <div class="dash-wrap">
       <button class="logout-btn" style="margin-bottom:12px;" data-back-to-projects>&larr; All projects</button>
       <div class="chart-card">
         <h3 style="margin-bottom:4px;">${escapeHtml(project.name)}</h3>
         ${projectComplete(pid) ? `<p style="color:var(--done);font-weight:600;font-size:13px;margin:4px 0 0;">✓ Project complete</p>` : ''}
+        <div class="section-label" style="margin:16px 0 6px;">Forecast completion date</div>
+        <input type="date" class="field-input" style="max-width:220px;" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
       </div>
       ${ms.map(m=>renderMilestoneCard(m)).join('')}
       <div class="chart-card">
@@ -1376,6 +1430,66 @@
         <div class="add-row" style="margin-bottom:0;">
           <input type="text" placeholder="Milestone name…" data-new-milestone-name="${pid}" />
         </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>Blockers</h3>
+        <div class="add-row">
+          <input type="text" placeholder="Describe the blocker…" data-new-blocker-title="${pid}" />
+          <select class="due-input" style="width:130px;" data-new-blocker-severity="${pid}">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select>
+        </div>
+        ${(openBlockers.length+resolvedBlockers.length)===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No blockers logged.</p>` : `
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          ${openBlockers.map(b=>`
+          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
+            <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(b.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(b.severity)}</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px;">${escapeHtml(b.title)}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">Owner: ${escapeHtml(b.owner||'—')} · Raised ${b.raisedDate||''}</div>
+            </div>
+            ${b.needsExecutiveSupport ? `<span style="font-size:10.5px;font-weight:700;color:#7A5B0E;background:var(--streak-bg);border-radius:999px;padding:4px 10px;flex-shrink:0;">Needs exec support</span>` : ''}
+            <button type="button" class="logout-btn" style="flex-shrink:0;" data-resolve-blocker="${b.id}">Resolve</button>
+          </div>`).join('')}
+          ${resolvedBlockers.map(b=>`
+          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;opacity:.6;">
+            <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(b.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(b.severity)}</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(b.title)}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">Resolved · was owned by ${escapeHtml(b.owner||'—')}</div>
+            </div>
+          </div>`).join('')}
+        </div>`}
+      </div>
+
+      <div class="chart-card">
+        <h3>Executive actions</h3>
+        <div class="add-row">
+          <input type="text" placeholder="What decision or approval is needed…" data-new-action-title="${pid}" />
+          <input type="date" class="due-input" data-new-action-due="${pid}" />
+        </div>
+        ${(openActions.length+closedActions.length)===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No executive actions logged.</p>` : `
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          ${openActions.map(a=>`
+          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px;">${escapeHtml(a.title)}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">Owner: ${escapeHtml(a.owner||'—')}${a.dueDate ? ` · Due ${a.dueDate}` : ''}</div>
+            </div>
+            <button type="button" class="logout-btn" style="flex-shrink:0;" data-close-action="${a.id}">Close</button>
+          </div>`).join('')}
+          ${closedActions.map(a=>`
+          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;opacity:.6;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(a.title)}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">Closed · was owned by ${escapeHtml(a.owner||'—')}</div>
+            </div>
+          </div>`).join('')}
+        </div>`}
       </div>
     </div>`;
   }
@@ -1808,6 +1922,28 @@
     if(newProjectInput) newProjectInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ createProject(newProjectInput.value); } });
     const newMilestoneInput = app.querySelector('[data-new-milestone-name]');
     if(newMilestoneInput) newMilestoneInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ addMilestone(newMilestoneInput.dataset.newMilestoneName, newMilestoneInput.value); } });
+
+    const forecastInput = app.querySelector('[data-forecast-date]');
+    if(forecastInput) forecastInput.addEventListener('change', ()=>{ setProjectForecastDate(forecastInput.dataset.forecastDate, forecastInput.value); });
+
+    const newBlockerTitle = app.querySelector('[data-new-blocker-title]');
+    if(newBlockerTitle) newBlockerTitle.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){
+        const sev = app.querySelector('[data-new-blocker-severity]');
+        createBlocker(newBlockerTitle.dataset.newBlockerTitle, newBlockerTitle.value, sev ? sev.value : 'medium');
+      }
+    });
+    app.querySelectorAll('[data-resolve-blocker]').forEach(b=>b.addEventListener('click', ()=>{ resolveBlocker(b.dataset.resolveBlocker); }));
+
+    const newActionTitle = app.querySelector('[data-new-action-title]');
+    if(newActionTitle) newActionTitle.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){
+        const due = app.querySelector('[data-new-action-due]');
+        createExecutiveAction(newActionTitle.dataset.newActionTitle, newActionTitle.value, due ? due.value : null);
+      }
+    });
+    app.querySelectorAll('[data-close-action]').forEach(b=>b.addEventListener('click', ()=>{ closeExecutiveAction(b.dataset.closeAction); }));
+
     app.querySelectorAll('[data-add-milestone-task]').forEach(inp=>inp.addEventListener('keydown', e=>{
       if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
     }));
