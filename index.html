@@ -491,8 +491,8 @@
         appError = (risksRes.error || blockersRes.error || actionsRes.error).message; render(); reloadInFlight = null; return;
       }
       state.risks = (risksRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status }));
-      state.blockers = (blockersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status }));
-      state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status, closedBy: profileName(r.closed_by) }));
+      state.blockers = (blockersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status, resolvedBy: profileName(r.resolved_by), resolutionNote:r.resolution_note }));
+      state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status, closedBy: profileName(r.closed_by), closureNote:r.closure_note }));
       await reconcileMilestones();
       render();
       reloadInFlight = null;
@@ -906,18 +906,23 @@
     title=(title||'').trim(); if(!title) return;
     await runMutation(()=> sb.from('blockers').insert({ project_id:projectId, title, severity: severity||'medium', owner: currentUserName(), created_by: currentUserId() }));
   }
-  async function resolveBlocker(id){
-    await runMutation(()=> sb.from('blockers').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('id', id));
+  async function resolveBlockerWithReason(id, reason){
+    const b = state.blockers.find(x=>x.id===id); if(!b) return;
+    const { error } = await sb.from('blockers').update({ status:'resolved', resolved_at:new Date().toISOString(), resolved_by: currentUserId(), resolution_note: reason }).eq('id', id);
+    if(error){ appError=error.message; render(); return; }
+    await sb.from('audit_log').insert({ blocker_id:id, task_title:b.title, action:'resolve_blocker', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
   async function createExecutiveAction(projectId, title, dueDate){
     title=(title||'').trim(); if(!title) return;
     await runMutation(()=> sb.from('executive_actions').insert({ project_id:projectId, title, due_date: dueDate||null, owner: currentUserName(), created_by: currentUserId() }));
   }
-  async function closeExecutiveAction(id){
+  async function closeExecutiveActionWithReason(id, reason){
     const a = state.executiveActions.find(x=>x.id===id); if(!a) return;
-    const { error } = await sb.from('executive_actions').update({ status:'closed', closed_at:new Date().toISOString(), closed_by: currentUserId() }).eq('id', id);
+    const { error } = await sb.from('executive_actions').update({ status:'closed', closed_at:new Date().toISOString(), closed_by: currentUserId(), closure_note: reason }).eq('id', id);
     if(error){ appError=error.message; render(); return; }
-    await sb.from('audit_log').insert({ executive_action_id:id, task_title:a.title, action:'close_executive_action', reason:'', user_id: currentUserId() });
+    await sb.from('audit_log').insert({ executive_action_id:id, task_title:a.title, action:'close_executive_action', reason, user_id: currentUserId() });
     appError = null;
     await reloadAllData();
   }
@@ -1535,6 +1540,7 @@
 
       <div class="chart-card">
         <h3>Blockers</h3>
+        ${executiveView ? '' : `
         <div class="add-row">
           <input type="text" placeholder="Describe the blocker…" data-new-blocker-title="${pid}" />
           <select class="due-input" style="width:130px;" data-new-blocker-severity="${pid}">
@@ -1543,7 +1549,7 @@
             <option value="high">High</option>
             <option value="critical">Critical</option>
           </select>
-        </div>
+        </div>`}
         ${(openBlockers.length+resolvedBlockers.length)===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No blockers logged.</p>` : `
         <div style="display:flex;flex-direction:column;gap:10px;">
           ${openBlockers.map(b=>`
@@ -1554,14 +1560,15 @@
               <div style="font-size:11.5px;color:var(--ink-faint);">Owner: ${escapeHtml(b.owner||'—')} · Raised ${b.raisedDate||''}</div>
             </div>
             ${b.needsExecutiveSupport ? `<span style="font-size:10.5px;font-weight:700;color:#7A5B0E;background:var(--streak-bg);border-radius:999px;padding:4px 10px;flex-shrink:0;">Needs exec support</span>` : ''}
-            <button type="button" class="logout-btn" style="flex-shrink:0;" data-resolve-blocker="${b.id}">Resolve</button>
+            <button type="button" class="logout-btn" style="flex-shrink:0;" data-action="resolve_blocker" data-taskid="${b.id}">Resolve</button>
           </div>`).join('')}
           ${resolvedBlockers.map(b=>`
           <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;opacity:.6;">
             <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(b.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(b.severity)}</span>
             <div style="flex:1;min-width:0;">
               <div style="font-size:14px;font-weight:600;margin-bottom:3px;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(b.title)}</div>
-              <div style="font-size:11.5px;color:var(--ink-faint);">Resolved · was owned by ${escapeHtml(b.owner||'—')}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">Resolved by ${escapeHtml(b.resolvedBy||'Unknown')} · was owned by ${escapeHtml(b.owner||'—')}</div>
+              ${b.resolutionNote ? `<div class="log-caption" style="text-align:left;margin-top:4px;">${escapeHtml(b.resolutionNote)}</div>` : ''}
             </div>
           </div>`).join('')}
         </div>`}
@@ -1569,10 +1576,11 @@
 
       <div class="chart-card">
         <h3>Executive actions</h3>
+        ${executiveView ? '' : `
         <div class="add-row">
           <input type="text" placeholder="What decision or approval is needed…" data-new-action-title="${pid}" />
           <input type="date" class="due-input" data-new-action-due="${pid}" />
-        </div>
+        </div>`}
         ${(openActions.length+closedActions.length)===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No executive actions logged.</p>` : `
         <div style="display:flex;flex-direction:column;gap:10px;">
           ${openActions.map(a=>`
@@ -1581,13 +1589,14 @@
               <div style="font-size:14px;font-weight:600;margin-bottom:3px;">${escapeHtml(a.title)}</div>
               <div style="font-size:11.5px;color:var(--ink-faint);">Owner: ${escapeHtml(a.owner||'—')}${a.dueDate ? ` · Due ${a.dueDate}` : ''}</div>
             </div>
-            <button type="button" class="logout-btn" style="flex-shrink:0;" data-close-action="${a.id}">Close</button>
+            <button type="button" class="logout-btn" style="flex-shrink:0;" data-action="close_executive_action" data-taskid="${a.id}">Close</button>
           </div>`).join('')}
           ${closedActions.map(a=>`
           <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;opacity:.6;">
             <div style="flex:1;min-width:0;">
               <div style="font-size:14px;font-weight:600;margin-bottom:3px;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(a.title)}</div>
               <div style="font-size:11.5px;color:var(--ink-faint);">Closed by ${escapeHtml(a.closedBy||'Unknown')} · was owned by ${escapeHtml(a.owner||'—')}</div>
+              ${a.closureNote ? `<div class="log-caption" style="text-align:left;margin-top:4px;">${escapeHtml(a.closureNote)}</div>` : ''}
             </div>
           </div>`).join('')}
         </div>`}
@@ -1829,15 +1838,17 @@
     </div>`;
   }
 
-  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone'};
-  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject'};
-  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting'};
+  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone', resolve_blocker:'Resolve blocker', close_executive_action:'Close executive action'};
+  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject', resolve_blocker:'Resolve', close_executive_action:'Close'};
+  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting', resolve_blocker:'resolving this blocker — describe how it was resolved', close_executive_action:'closing this action — describe how it was resolved'};
 
   function renderActionDialog(){
     const type = pendingAction.type;
     const isMilestoneAction = type==='milestone_approve' || type==='milestone_reject';
     const t = type==='restore' ? state.trash.find(x=>x.id===pendingAction.taskId)
       : isMilestoneAction ? state.milestones.find(x=>x.id===pendingAction.taskId)
+      : type==='resolve_blocker' ? state.blockers.find(x=>x.id===pendingAction.taskId)
+      : type==='close_executive_action' ? state.executiveActions.find(x=>x.id===pendingAction.taskId)
       : getTask(pendingAction.taskId);
     return `
     <div class="overlay" data-close-action>
@@ -1957,6 +1968,8 @@
         if(type==='restore') restoreTaskWithLog(taskId, reason, username);
         if(type==='milestone_approve') approveMilestone(taskId, reason);
         if(type==='milestone_reject') rejectMilestone(taskId, reason);
+        if(type==='resolve_blocker') resolveBlockerWithReason(taskId, reason);
+        if(type==='close_executive_action') closeExecutiveActionWithReason(taskId, reason);
         pendingAction=null; openTaskId=null; render();
       });
     }
@@ -2035,7 +2048,7 @@
         createBlocker(newBlockerTitle.dataset.newBlockerTitle, newBlockerTitle.value, sev ? sev.value : 'medium');
       }
     });
-    app.querySelectorAll('[data-resolve-blocker]').forEach(b=>b.addEventListener('click', ()=>{ resolveBlocker(b.dataset.resolveBlocker); }));
+
 
     const newActionTitle = app.querySelector('[data-new-action-title]');
     if(newActionTitle) newActionTitle.addEventListener('keydown', e=>{
@@ -2044,7 +2057,7 @@
         createExecutiveAction(newActionTitle.dataset.newActionTitle, newActionTitle.value, due ? due.value : null);
       }
     });
-    app.querySelectorAll('[data-close-action]').forEach(b=>b.addEventListener('click', ()=>{ closeExecutiveAction(b.dataset.closeAction); }));
+
 
     app.querySelectorAll('[data-add-milestone-task]').forEach(inp=>inp.addEventListener('keydown', e=>{
       if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
