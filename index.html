@@ -302,6 +302,7 @@
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
   let taskLinkProjectId = null;
+  let executiveView = false;
   let view = "board";
   let mobileCol = "todo";
   let selectedDay = todayStr();
@@ -856,6 +857,37 @@
   async function setTaskMilestone(taskId, milestoneId){
     await runMutation(()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId));
   }
+  /* ---------------- Executive health scoring ---------------- */
+  function isTaskOverdue(t){ return !!(t.dueDate && t.status!=='done' && t.dueDate < todayStr()); }
+  function projectHealth(pid){
+    const ms = milestonesForProject(pid);
+    const msTotal = ms.length;
+    const msComplete = ms.filter(m=>m.status==='complete').length;
+    const msScore = msTotal ? (msComplete/msTotal)*100 : 0;
+
+    const linkedTasks = state.tasks.filter(t=>ms.some(m=>m.id===t.milestoneId));
+    const taskTotal = linkedTasks.length;
+    const overdueCount = linkedTasks.filter(isTaskOverdue).length;
+    const suspendedCount = linkedTasks.filter(t=>t.status==='suspended').length;
+    const overdueScore = taskTotal ? Math.max(0, 100 - (overdueCount/taskTotal)*100) : 100;
+    const suspendedScore = taskTotal ? Math.max(0, 100 - (suspendedCount/taskTotal)*100) : 100;
+
+    const openBlockersCount = blockersForProject(pid).filter(b=>b.status==='open').length;
+    const blockerScore = Math.max(0, 100 - openBlockersCount*25);
+
+    const score = Math.round(msScore*0.40 + overdueScore*0.25 + suspendedScore*0.15 + blockerScore*0.20);
+    const bucket = score>=85 ? 'green' : score>=60 ? 'amber' : 'red';
+    return { score, bucket, msTotal, msComplete, openBlockersCount };
+  }
+  function healthColor(bucket){ return bucket==='green' ? 'var(--done)' : bucket==='amber' ? 'var(--streak)' : 'var(--danger)'; }
+  function healthLabel(bucket){ return bucket==='green' ? 'Green' : bucket==='amber' ? 'Amber' : 'Red'; }
+  function healthPillStyle(bucket){
+    if(bucket==='green') return `background:var(--done-bg);color:var(--done);`;
+    if(bucket==='amber') return `background:var(--streak-bg);color:#7A5B0E;`;
+    return `background:rgba(166,65,42,0.12);color:var(--danger);`;
+  }
+  function openExecutiveActionsCount(){ return state.executiveActions.filter(a=>a.status==='open').length; }
+
   /* ---------------- Risks, Blockers, Executive Actions ---------------- */
   function risksForProject(pid){ return state.risks.filter(r=>r.projectId===pid); }
   function blockersForProject(pid){ return state.blockers.filter(b=>b.projectId===pid); }
@@ -1337,8 +1369,18 @@
 
   /* ---------------- Projects view ---------------- */
   function renderProjectsList(){
+    const execActionsCount = openExecutiveActionsCount();
     return `
     <div class="dash-wrap">
+      <div class="filter-toggle" style="margin-bottom:4px;width:max-content;">
+        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Practitioner</button>
+        <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
+      </div>
+      ${executiveView && execActionsCount>0 ? `
+      <div style="background:var(--streak-bg);border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:10px;">
+        <span style="width:9px;height:9px;border-radius:50%;background:var(--streak);flex-shrink:0;"></span>
+        <span style="font-size:13.5px;font-weight:600;color:#7A5B0E;">You have ${execActionsCount} executive action${execActionsCount===1?'':'s'} requiring attention</span>
+      </div>` : ''}
       <div class="chart-card">
         <h3>New project</h3>
         <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">Every project starts with 5 milestones — Define, Measure, Analyze, Improve, Control — which you can rename, reorder, add to, or remove afterward.</p>
@@ -1348,6 +1390,34 @@
         <button class="primary-btn" style="margin-top:8px;" data-create-project>Create project</button>
       </div>
       ${state.projects.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : state.projects.map(p=>{
+        if(executiveView){
+          const h = projectHealth(p.id);
+          const pct = h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0;
+          const ring = `conic-gradient(${healthColor(h.bucket)} 0% ${pct}%, var(--line) ${pct}% 100%)`;
+          const openRisks = risksForProject(p.id).filter(r=>r.status==='open').length;
+          const openActions = actionsForProject(p.id).filter(a=>a.status==='open').length;
+          return `
+          <button class="card" style="display:flex;align-items:center;gap:20px;width:100%;margin-bottom:12px;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
+            <div style="position:relative;width:92px;height:92px;flex-shrink:0;">
+              <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
+              <div style="position:absolute;inset:13px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
+                <span class="serif" style="font-weight:600;font-size:19px;">${pct}%</span>
+              </div>
+            </div>
+            <div style="flex:1;min-width:0;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+                <span class="title">${escapeHtml(p.name)}</span>
+                <span style="font-size:11px;font-weight:700;border-radius:999px;padding:4px 11px;${healthPillStyle(h.bucket)}">Health: ${healthLabel(h.bucket)}</span>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:16px;font-size:12.5px;color:var(--ink-soft);">
+                <span><strong style="color:var(--danger);">${h.openBlockersCount}</strong> blocker${h.openBlockersCount===1?'':'s'}</span>
+                <span><strong>${openRisks}</strong> risk${openRisks===1?'':'s'}</span>
+                <span><strong style="color:var(--streak);">${openActions}</strong> executive action${openActions===1?'':'s'}</span>
+                <span style="color:var(--ink-faint);">${p.forecastCompletionDate ? `Forecast ${p.forecastCompletionDate}` : 'No forecast set'}</span>
+              </div>
+            </div>
+          </button>`;
+        }
         const { counts, total } = milestoneStatusCounts(p.id);
         const pct = total ? Math.round((counts.complete/total)*100) : 0;
         const ring = projectRingGradient(counts, total);
@@ -1415,15 +1485,40 @@
     const resolvedBlockers = blockersForProject(pid).filter(b=>b.status==='resolved');
     const openActions = actionsForProject(pid).filter(a=>a.status==='open');
     const closedActions = actionsForProject(pid).filter(a=>a.status==='closed');
+    const h = executiveView ? projectHealth(pid) : null;
     return `
     <div class="dash-wrap">
       <button class="logout-btn" style="margin-bottom:12px;" data-back-to-projects>&larr; All projects</button>
+      <div class="filter-toggle" style="margin-bottom:4px;width:max-content;">
+        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Practitioner</button>
+        <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
+      </div>
+      ${executiveView ? `
+      <div class="chart-card">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;">
+          <h3 style="margin:0;">${escapeHtml(project.name)}</h3>
+          <span style="font-size:11px;font-weight:700;border-radius:999px;padding:4px 11px;${healthPillStyle(h.bucket)}">Health: ${healthLabel(h.bucket)} · ${h.score}</span>
+        </div>
+        <div class="stat-grid" style="margin-top:14px;">
+          <div class="stat-card"><div class="num serif">${h.score}</div><div class="lbl">Health score</div></div>
+          <div class="stat-card"><div class="num serif">${h.msComplete} / ${h.msTotal}</div><div class="lbl">Milestones complete</div></div>
+          <div class="stat-card"><div class="num serif" style="color:var(--danger);">${openRisks.length}</div><div class="lbl">Open risks</div></div>
+          <div class="stat-card"><div class="num serif" style="color:var(--danger);">${h.openBlockersCount}</div><div class="lbl">Open blockers</div></div>
+        </div>
+        <div class="stat-grid" style="margin-top:10px;grid-template-columns:repeat(2,1fr);">
+          <div class="stat-card"><div class="num serif" style="color:var(--streak);">${openActions.length}</div><div class="lbl">Executive actions required</div></div>
+          <div class="stat-card">
+            <div class="section-label" style="margin-top:0;">Forecast completion</div>
+            <input type="date" class="field-input" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
+          </div>
+        </div>
+      </div>` : `
       <div class="chart-card">
         <h3 style="margin-bottom:4px;">${escapeHtml(project.name)}</h3>
         ${projectComplete(pid) ? `<p style="color:var(--done);font-weight:600;font-size:13px;margin:4px 0 0;">✓ Project complete</p>` : ''}
         <div class="section-label" style="margin:16px 0 6px;">Forecast completion date</div>
         <input type="date" class="field-input" style="max-width:220px;" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
-      </div>
+      </div>`}
       ${ms.map(m=>renderMilestoneCard(m)).join('')}
       <div class="chart-card">
         <h3>Add milestone</h3>
@@ -1766,6 +1861,7 @@
     if(logoutBtn) logoutBtn.addEventListener('click', logout);
 
     app.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ taskFilter=b.dataset.filter; render(); }));
+    app.querySelectorAll('[data-exec-toggle]').forEach(b=>b.addEventListener('click', ()=>{ executiveView = b.dataset.execToggle==='executive'; render(); }));
 
     app.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{ view=b.dataset.nav; selectedSummaryDay=null; dueDropdownOpen=false; selectedProjectId=null; render(); }));
     app.querySelectorAll('[data-day]').forEach(b=>b.addEventListener('click', ()=>{
