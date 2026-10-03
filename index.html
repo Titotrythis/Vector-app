@@ -1391,6 +1391,68 @@
         <span style="width:9px;height:9px;border-radius:50%;background:var(--streak);flex-shrink:0;"></span>
         <span style="font-size:13.5px;font-weight:600;color:#7A5B0E;">You have ${execActionsCount} executive action${execActionsCount===1?'':'s'} requiring attention</span>
       </div>` : ''}
+      ${state.projects.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;">
+        ${state.projects.map(p=>{
+          if(executiveView){
+            const h = projectHealth(p.id);
+            const pct = h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0;
+            const ring = `conic-gradient(${healthColor(h.bucket)} 0% ${pct}%, var(--line) ${pct}% 100%)`;
+            const openRisks = risksForProject(p.id).filter(r=>r.status==='open').length;
+            const openActions = actionsForProject(p.id).filter(a=>a.status==='open').length;
+            return `
+            <button class="card" style="display:flex;align-items:center;gap:18px;width:100%;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
+              <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
+                <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
+                <div style="position:absolute;inset:12px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
+                  <span class="serif" style="font-weight:600;font-size:17px;">${pct}%</span>
+                </div>
+              </div>
+              <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+                  <span class="title">${escapeHtml(p.name)}</span>
+                  <span style="font-size:10.5px;font-weight:700;border-radius:999px;padding:3px 10px;${healthPillStyle(h.bucket)}">${healthLabel(h.bucket)}</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink-soft);">
+                  <span><strong style="color:var(--danger);">${h.openBlockersCount}</strong> blocker${h.openBlockersCount===1?'':'s'} · <strong>${openRisks}</strong> risk${openRisks===1?'':'s'} · <strong style="color:var(--streak);">${openActions}</strong> action${openActions===1?'':'s'}</span>
+                  <span style="color:var(--ink-faint);">${p.forecastCompletionDate ? `Forecast ${p.forecastCompletionDate}` : 'No forecast set'}</span>
+                </div>
+              </div>
+            </button>`;
+          }
+          const { counts, total } = milestoneStatusCounts(p.id);
+          const pct = total ? Math.round((counts.complete/total)*100) : 0;
+          const ring = projectRingGradient(counts, total);
+          const rows = [
+            ['Complete', counts.complete, 'var(--done)'],
+            ['Awaiting review', counts.awaiting_review, 'var(--streak)'],
+            ['In progress', counts.in_progress, 'var(--progress)'],
+            ['Not started', counts.not_started, 'var(--line-strong)'],
+          ];
+          return `
+          <button class="card" style="display:flex;align-items:center;gap:18px;width:100%;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
+            <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
+              <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
+              <div style="position:absolute;inset:12px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
+                <span class="serif" style="font-weight:600;font-size:17px;">${pct}%</span>
+              </div>
+            </div>
+            <div style="flex:1;min-width:0;">
+              <div class="title" style="margin-bottom:2px;">${escapeHtml(p.name)}</div>
+              <div class="meta" style="margin-bottom:6px;">${total} milestone${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Complete</span>` : ''}</div>
+              <div style="display:flex;flex-direction:column;gap:4px;">
+                ${rows.filter(r=>r[1]>0).map(([label,count,color])=>`
+                  <div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-soft);">
+                    <span style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>
+                    <span style="flex:1;">${label}</span>
+                    <span style="color:var(--ink-faint);">${count}</span>
+                  </div>`).join('')}
+              </div>
+            </div>
+          </button>`;
+        }).join('')}
+      </div>`}
+      ${executiveView ? '' : `
       <div class="chart-card">
         <h3>New project</h3>
         <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">Every project starts with 5 milestones — Define, Measure, Analyze, Improve, Control — which you can rename, reorder, add to, or remove afterward.</p>
@@ -1398,65 +1460,7 @@
           <input type="text" placeholder="Project name…" data-new-project-name />
         </div>
         <button class="primary-btn" style="margin-top:8px;" data-create-project>Create project</button>
-      </div>
-      ${state.projects.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : state.projects.map(p=>{
-        if(executiveView){
-          const h = projectHealth(p.id);
-          const pct = h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0;
-          const ring = `conic-gradient(${healthColor(h.bucket)} 0% ${pct}%, var(--line) ${pct}% 100%)`;
-          const openRisks = risksForProject(p.id).filter(r=>r.status==='open').length;
-          const openActions = actionsForProject(p.id).filter(a=>a.status==='open').length;
-          return `
-          <button class="card" style="display:flex;align-items:center;gap:20px;width:100%;margin-bottom:12px;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
-            <div style="position:relative;width:92px;height:92px;flex-shrink:0;">
-              <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
-              <div style="position:absolute;inset:13px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
-                <span class="serif" style="font-weight:600;font-size:19px;">${pct}%</span>
-              </div>
-            </div>
-            <div style="flex:1;min-width:0;">
-              <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-                <span class="title">${escapeHtml(p.name)}</span>
-                <span style="font-size:11px;font-weight:700;border-radius:999px;padding:4px 11px;${healthPillStyle(h.bucket)}">Health: ${healthLabel(h.bucket)}</span>
-              </div>
-              <div style="display:flex;flex-wrap:wrap;gap:16px;font-size:12.5px;color:var(--ink-soft);">
-                <span><strong style="color:var(--danger);">${h.openBlockersCount}</strong> blocker${h.openBlockersCount===1?'':'s'}</span>
-                <span><strong>${openRisks}</strong> risk${openRisks===1?'':'s'}</span>
-                <span><strong style="color:var(--streak);">${openActions}</strong> executive action${openActions===1?'':'s'}</span>
-                <span style="color:var(--ink-faint);">${p.forecastCompletionDate ? `Forecast ${p.forecastCompletionDate}` : 'No forecast set'}</span>
-              </div>
-            </div>
-          </button>`;
-        }
-        const { counts, total } = milestoneStatusCounts(p.id);
-        const pct = total ? Math.round((counts.complete/total)*100) : 0;
-        const ring = projectRingGradient(counts, total);
-        const rows = [
-          ['Complete', counts.complete, 'var(--done)'],
-          ['Awaiting review', counts.awaiting_review, 'var(--streak)'],
-          ['In progress', counts.in_progress, 'var(--progress)'],
-          ['Not started', counts.not_started, 'var(--line-strong)'],
-        ];
-        return `
-        <button class="card" style="display:flex;align-items:center;gap:20px;width:100%;margin-bottom:12px;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
-          <div style="position:relative;width:92px;height:92px;flex-shrink:0;">
-            <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
-            <div style="position:absolute;inset:13px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
-              <span class="serif" style="font-weight:600;font-size:19px;">${pct}%</span>
-            </div>
-          </div>
-          <div style="flex:1;min-width:0;">
-            <div class="title" style="margin-bottom:2px;">${escapeHtml(p.name)}</div>
-            <div class="meta" style="margin-bottom:8px;">${total} milestone${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Project complete</span>` : ''}</div>
-            <div style="display:flex;flex-wrap:wrap;gap:4px 14px;">
-              ${rows.filter(r=>r[1]>0).map(([label,count,color])=>`
-                <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);">
-                  <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;"></span>${label} <span style="color:var(--ink-faint);">${count}</span>
-                </span>`).join('')}
-            </div>
-          </div>
-        </button>`;
-      }).join('')}
+      </div>`}
     </div>`;
   }
 
