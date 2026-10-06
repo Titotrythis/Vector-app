@@ -177,6 +177,8 @@
   .bar-col .blabel{font-size:10px;color:var(--ink-faint);margin-top:5px;}
   .log-list{display:flex;flex-direction:column;gap:8px;margin-top:4px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
   .log-list::-webkit-scrollbar{display:none;}
+  .resp-list{display:flex;flex-direction:column;gap:10px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
+  .resp-list::-webkit-scrollbar{display:none;}
   .log-item{background:var(--surface);border-radius:10px;padding:10px 12px;}
   .log-item-title{font-weight:600;font-size:13.5px;}
   .log-item-time{font-size:10.5px;color:var(--ink-faint);margin-top:2px;}
@@ -306,6 +308,7 @@
 
   let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [] };
   let retroWeekStart = null;
+  let expandedMilestoneId = null;
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
   let taskLinkProjectId = null;
@@ -1077,16 +1080,20 @@
     });
   }
 
-  function fitScrollLists(){
-    document.querySelectorAll('.cards, .log-list').forEach(container=>{
+  function fitScrollListGroup(selector, cap){
+    document.querySelectorAll(selector).forEach(container=>{
       const items = Array.from(container.children).filter(el=>!el.classList.contains('scroll-hint'));
-      if(items.length <= 6){ container.style.maxHeight = 'none'; return; }
+      if(items.length <= cap){ container.style.maxHeight = 'none'; return; }
       const gapPx = parseFloat(getComputedStyle(container).rowGap) || 8;
       let total = 0;
-      for(let i=0;i<6;i++){ total += items[i].getBoundingClientRect().height; }
-      total += gapPx * 5;
+      for(let i=0;i<cap;i++){ total += items[i].getBoundingClientRect().height; }
+      total += gapPx * (cap-1);
       container.style.maxHeight = total + 'px';
     });
+  }
+  function fitScrollLists(){
+    fitScrollListGroup('.cards, .log-list', 6);
+    fitScrollListGroup('.resp-list', 3);
   }
 
   function fitCalendarHeight(){
@@ -1612,23 +1619,25 @@
     const done = tasks.filter(t=>t.status==='done').length;
     const pct = tasks.length ? Math.round(done/tasks.length*100) : 0;
     const canReview = canReviewMilestones();
+    const isExpanded = expandedMilestoneId===m.id;
     return `
     <div class="chart-card">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
-        <h3 style="margin:0;">${escapeHtml(m.name)}</h3>
+      <button type="button" style="cursor:pointer;background:none;border:none;padding:0;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;width:100%;text-align:left;font:inherit;color:inherit;" data-toggle-milestone="${m.id}">
+        <h3 style="margin:0;">${escapeHtml(m.name)} <span style="font-size:11px;color:var(--ink-faint);">${isExpanded?'▾':'▸'}</span></h3>
         <span class="status-chip ${milestoneChipClass(m.status)}">${milestoneStatusLabel(m.status)}</span>
-      </div>
+      </button>
       <div class="card-progress-track" style="margin-top:10px;"><div class="card-progress-fill" style="width:${pct}%;"></div></div>
       <div class="meta" style="margin-top:6px;">${done}/${tasks.length} task${tasks.length===1?'':'s'} done</div>
+      ${isExpanded ? `
       ${tasks.length>0 ? `<div class="log-list" style="margin-top:10px;">${tasks.map(t=>`<div class="log-item" style="cursor:pointer;" data-open="${t.id}"><div class="log-item-title">${escapeHtml(t.title)}</div><div class="log-item-time">${statusLabel(t.status)}</div></div>`).join('')}</div>` : ''}
-      <div class="add-sub"><input type="text" placeholder="Add a task to this milestone…" data-add-milestone-task="${m.id}" /></div>
+      <div class="add-sub"><input type="text" placeholder="Add a task to this milestone…" data-add-milestone-task="${m.id}" /></div>` : ''}
       ${m.status==='awaiting_review' && canReview ? `
         <div style="display:flex;gap:8px;margin-top:12px;">
           <button class="primary-btn" data-action="milestone_approve" data-taskid="${m.id}">Approve</button>
           <button class="primary-btn" style="background:var(--danger);" data-action="milestone_reject" data-taskid="${m.id}">Reject</button>
         </div>` : ''}
       ${m.status==='awaiting_review' && !canReview ? `<p style="font-size:11.5px;color:var(--ink-faint);margin-top:10px;">Awaiting sign-off from a Journey Architect.</p>` : ''}
-      <button class="del" style="margin-top:10px;background:none;border:none;color:var(--ink-faint);font-size:11.5px;" data-delete-milestone="${m.id}">Delete milestone</button>
+      ${isExpanded ? `<button class="del" style="margin-top:10px;background:none;border:none;color:var(--ink-faint);font-size:11.5px;" data-delete-milestone="${m.id}">Delete milestone</button>` : ''}
     </div>`;
   }
 
@@ -1699,7 +1708,7 @@
           </select>
         </div>`}
         ${(openBlockers.length+resolvedBlockers.length)===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No blockers logged.</p>` : `
-        <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="resp-list">
           ${openBlockers.map(b=>`
           <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
             <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(b.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(b.severity)}</span>
@@ -1719,7 +1728,8 @@
               ${b.resolutionNote ? `<div class="log-caption" style="text-align:left;margin-top:4px;">${escapeHtml(b.resolutionNote)}</div>` : ''}
             </div>
           </div>`).join('')}
-        </div>`}
+        </div>
+        ${(openBlockers.length+resolvedBlockers.length) > 3 ? `<div class="scroll-hint">Scroll to see ${(openBlockers.length+resolvedBlockers.length)-3} more</div>` : ''}`}
       </div>
 
       <div class="chart-card" style="${executiveView?'background:var(--surface);':''}">
@@ -1730,7 +1740,7 @@
           <input type="date" class="due-input" data-new-action-due="${pid}" />
         </div>`}
         ${(openActions.length+closedActions.length)===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No executive actions logged.</p>` : `
-        <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="resp-list">
           ${openActions.map(a=>`
           <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
             <div style="flex:1;min-width:0;">
@@ -1747,11 +1757,13 @@
               ${a.closureNote ? `<div class="log-caption" style="text-align:left;margin-top:4px;">${escapeHtml(a.closureNote)}</div>` : ''}
             </div>
           </div>`).join('')}
-        </div>`}
+        </div>
+        ${(openActions.length+closedActions.length) > 3 ? `<div class="scroll-hint">Scroll to see ${(openActions.length+closedActions.length)-3} more</div>` : ''}`}
       </div>
 
+      ${executiveView ? '' : `
       ${renderMembersSection(pid)}
-      ${renderRetroSection(pid)}
+      ${renderRetroSection(pid)}`}
     </div>`;
   }
 
@@ -2229,7 +2241,12 @@
       if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
     }));
     app.querySelectorAll('[data-delete-milestone]').forEach(b=>b.addEventListener('click', ()=>{ deleteMilestone(b.dataset.deleteMilestone); }));
-    app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; retroWeekStart=null; render(); }));
+    app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; retroWeekStart=null; expandedMilestoneId=null; render(); }));
+    app.querySelectorAll('[data-toggle-milestone]').forEach(b=>b.addEventListener('click', ()=>{
+      const id = b.dataset.toggleMilestone;
+      expandedMilestoneId = expandedMilestoneId===id ? null : id;
+      render();
+    }));
     const backToProjectsBtn = app.querySelector('[data-back-to-projects]');
     if(backToProjectsBtn) backToProjectsBtn.addEventListener('click', ()=>{ selectedProjectId=null; render(); });
     const taskProjectPicker = app.querySelector('[data-task-project-picker]');
