@@ -304,7 +304,8 @@
   const POMODORO_SEC = 25*60;
   const PRIORITIES = ['urgent','veryhigh','high','low'];
 
-  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [] };
+  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [] };
+  let retroWeekStart = null;
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
   let taskLinkProjectId = null;
@@ -499,6 +500,15 @@
       state.risks = (risksRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status }));
       state.blockers = (blockersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status, resolvedBy: profileName(r.resolved_by), resolutionNote:r.resolution_note }));
       state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status, closedBy: profileName(r.closed_by), closureNote:r.closure_note }));
+      const [membersRes, retrosRes] = await Promise.all([
+        sb.from('project_members').select('*'),
+        sb.from('retrospectives').select('*'),
+      ]);
+      if(membersRes.error || retrosRes.error){
+        appError = (membersRes.error || retrosRes.error).message; render(); reloadInFlight = null; return;
+      }
+      state.projectMembers = (membersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, name: profileName(r.user_id) }));
+      state.retrospectives = (retrosRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, weekStart:r.week_start, wentWell:r.went_well, notWell:r.not_well, learned:r.learned, nextPriority:r.next_priority }));
       await reconcileMilestones();
       render();
       reloadInFlight = null;
@@ -521,6 +531,8 @@
       .on('postgres_changes', {event:'*', schema:'public', table:'risks'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'blockers'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'executive_actions'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'project_members'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'retrospectives'}, scheduleReload)
       .subscribe();
   }
   function teardownRealtime(){
@@ -900,6 +912,42 @@
   function actionsForProject(pid){ return state.executiveActions.filter(a=>a.projectId===pid); }
   function severityColor(s){ return s==='critical'?'var(--pri-urgent)': s==='high'?'var(--pri-veryhigh)': s==='low'?'var(--pri-low)':'var(--pri-high)'; }
   function severityLabel(s){ return s==='critical'?'Critical': s==='high'?'High': s==='low'?'Low':'Medium'; }
+
+  /* ---------------- Project membership & Weekly Retrospective ---------------- */
+  function membersForProject(pid){ return state.projectMembers.filter(m=>m.projectId===pid); }
+  function weekStartMonday(dateStr){
+    const d = strToDate(dateStr);
+    const day = d.getDay();
+    const diff = day===0 ? -6 : 1-day;
+    d.setDate(d.getDate()+diff);
+    return dateToStr(d);
+  }
+  function getRetroWeekStart(){ return retroWeekStart || weekStartMonday(todayStr()); }
+  function formatWeekRange(weekStart){
+    const friday = addDays(weekStart, 4);
+    const fmt = s => strToDate(s).toLocaleDateString('en-US',{weekday:'short', day:'numeric', month:'short'});
+    return `${fmt(weekStart)} – ${fmt(friday)}`;
+  }
+  function retroFor(pid, userId, weekStart){ return state.retrospectives.find(r=>r.projectId===pid && r.userId===userId && r.weekStart===weekStart); }
+  function myLastWeekPriority(pid, weekStart){
+    const prev = addDays(weekStart, -7);
+    const r = retroFor(pid, currentUserId(), prev);
+    return r ? r.nextPriority : null;
+  }
+  async function addProjectMember(pid, userId){
+    if(!userId) return;
+    await runMutation(()=> sb.from('project_members').insert({ project_id:pid, user_id:userId, added_by: currentUserId() }));
+  }
+  async function removeProjectMember(id){
+    await runMutation(()=> sb.from('project_members').delete().eq('id', id));
+  }
+  async function saveMyRetro(pid, weekStart, vals){
+    await runMutation(()=> sb.from('retrospectives').upsert({
+      project_id: pid, user_id: currentUserId(), week_start: weekStart,
+      went_well: vals.wentWell||'', not_well: vals.notWell||'', learned: vals.learned||'', next_priority: vals.nextPriority||'',
+      updated_at: new Date().toISOString(),
+    }, {onConflict:'project_id,user_id,week_start'}));
+  }
 
   async function createRisk(projectId, title, severity){
     title=(title||'').trim(); if(!title) return;
@@ -1473,6 +1521,92 @@
     </div>`;
   }
 
+  function renderMembersSection(pid){
+    if(!canReviewMilestones()) return '';
+    const members = membersForProject(pid);
+    const memberIds = new Set(members.map(m=>m.userId));
+    const nonMembers = state.profiles.filter(p=>!memberIds.has(p.id));
+    return `
+    <div class="chart-card">
+      <h3>Project members</h3>
+      <p style="font-size:11.5px;color:var(--ink-faint);margin:0 0 12px;">Only Journey Architects can manage this list. Used to populate the weekly retro roster.</p>
+      ${members.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);margin-bottom:12px;">No members added yet.</p>` : `
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+        ${members.map(m=>`
+        <div style="display:flex;align-items:center;gap:10px;background:var(--surface-alt);border-radius:9px;padding:8px 12px;">
+          <span class="user-avatar" style="width:24px;height:24px;font-size:11px;">${escapeHtml(initialsFor(m.name))}</span>
+          <span style="flex:1;font-size:13.5px;font-weight:600;">${escapeHtml(m.name)}</span>
+          <button type="button" class="logout-btn" data-remove-member="${m.id}">Remove</button>
+        </div>`).join('')}
+      </div>`}
+      <select class="field-input" data-new-member-select="${pid}">
+        <option value="">Add a team member…</option>
+        ${nonMembers.map(p=>`<option value="${p.id}">${escapeHtml(p.display_name)}</option>`).join('')}
+      </select>
+    </div>`;
+  }
+
+  function renderRetroSection(pid){
+    const weekStart = getRetroWeekStart();
+    const members = membersForProject(pid);
+    const lastPriority = myLastWeekPriority(pid, weekStart);
+    const mine = retroFor(pid, currentUserId(), weekStart);
+    const columns = [
+      ['wentWell', 'What went well'],
+      ['notWell', "What didn't go well"],
+      ['learned', 'What I learned'],
+      ['nextPriority', "Next week's one priority"],
+    ];
+    return `
+    <div class="chart-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+        <h3 style="margin:0;">Weekly Retrospective</h3>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button type="button" class="icon-btn" data-retro-week-nav="-7">${ICONS.chevL}</button>
+          <span style="font-size:12.5px;font-weight:600;">Week of ${formatWeekRange(weekStart)}</span>
+          <button type="button" class="icon-btn" data-retro-week-nav="7">${ICONS.chevR}</button>
+        </div>
+      </div>
+      ${lastPriority ? `
+      <div style="background:var(--streak-bg);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <span style="width:7px;height:7px;border-radius:50%;background:var(--streak);flex-shrink:0;"></span>
+        <span style="font-size:12.5px;color:#7A5B0E;"><strong>Your priority last week:</strong> ${escapeHtml(lastPriority)}</span>
+      </div>` : ''}
+      ${members.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No project members yet — ask a Journey Architect to add the team here first.</p>` : `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+        ${columns.map(([field,label])=>`
+          <div>
+            <div style="font-size:10.5px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.03em;margin-bottom:8px;">${label}</div>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              ${members.map(m=>{
+                const e = retroFor(pid, m.userId, weekStart);
+                const val = e ? e[field] : '';
+                return val ? `
+                <div style="background:var(--surface);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow-card);">
+                  <div style="font-size:10px;font-weight:700;color:var(--ink-faint);margin-bottom:3px;">${escapeHtml(m.name)}</div>
+                  <div style="font-size:12.5px;line-height:1.45;">${escapeHtml(val)}</div>
+                </div>` : `
+                <div style="border:1.5px dashed var(--line-strong);border-radius:10px;padding:10px 12px;">
+                  <div style="font-size:10px;font-weight:700;color:var(--ink-faint);margin-bottom:3px;">${escapeHtml(m.name)}</div>
+                  <div style="font-size:11.5px;color:var(--ink-faint);font-style:italic;">Not submitted yet</div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>`).join('')}
+      </div>`}
+      <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:16px;">
+        <div class="section-label" style="margin-top:0;">Your retro for this week</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <textarea class="notes" placeholder="What went well…" data-retro-field="wentWell">${escapeHtml(mine?mine.wentWell:'')}</textarea>
+          <textarea class="notes" placeholder="What didn't go well…" data-retro-field="notWell">${escapeHtml(mine?mine.notWell:'')}</textarea>
+          <textarea class="notes" placeholder="What I learned…" data-retro-field="learned">${escapeHtml(mine?mine.learned:'')}</textarea>
+          <textarea class="notes" placeholder="Next week's one priority…" data-retro-field="nextPriority">${escapeHtml(mine?mine.nextPriority:'')}</textarea>
+        </div>
+        <button class="primary-btn" style="margin-top:10px;" data-save-retro="${pid}">Save my retro</button>
+      </div>
+    </div>`;
+  }
+
   function renderMilestoneCard(m){
     const tasks = tasksForMilestone(m.id);
     const done = tasks.filter(t=>t.status==='done').length;
@@ -1509,6 +1643,7 @@
     const openActions = actionsForProject(pid).filter(a=>a.status==='open');
     const closedActions = actionsForProject(pid).filter(a=>a.status==='closed');
     const h = executiveView ? projectHealth(pid) : null;
+    const hPct = h ? (h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0) : 0;
     return `
     <div class="dash-wrap">
       <button class="logout-btn" style="margin-bottom:12px;" data-back-to-projects>&larr; All projects</button>
@@ -1520,10 +1655,10 @@
       <div class="chart-card">
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;">
           <h3 style="margin:0;">${escapeHtml(project.name)}</h3>
-          <span style="font-size:11px;font-weight:700;border-radius:999px;padding:4px 11px;${healthPillStyle(h.bucket)}">Health: ${healthLabel(h.bucket)} · ${h.score}</span>
+          <span style="font-size:11px;font-weight:700;border-radius:999px;padding:4px 11px;${healthPillStyle(h.bucket)}">Health: ${healthLabel(h.bucket)}</span>
         </div>
         <div class="stat-grid" style="margin-top:14px;">
-          <div class="stat-card"><div class="num serif">${h.score}</div><div class="lbl">Health score</div></div>
+          <div class="stat-card"><div class="num serif">${hPct}%</div><div class="lbl">Progress</div></div>
           <div class="stat-card"><div class="num serif">${h.msComplete} / ${h.msTotal}</div><div class="lbl">Milestones complete</div></div>
           <div class="stat-card"><div class="num serif" style="color:var(--danger);">${openRisks.length}</div><div class="lbl">Open risks</div></div>
           <div class="stat-card"><div class="num serif" style="color:var(--danger);">${h.openBlockersCount}</div><div class="lbl">Open blockers</div></div>
@@ -1614,6 +1749,9 @@
           </div>`).join('')}
         </div>`}
       </div>
+
+      ${renderMembersSection(pid)}
+      ${renderRetroSection(pid)}
     </div>`;
   }
 
@@ -2071,12 +2209,27 @@
       }
     });
 
+    app.querySelectorAll('[data-remove-member]').forEach(b=>b.addEventListener('click', ()=>{ removeProjectMember(b.dataset.removeMember); }));
+    const newMemberSelect = app.querySelector('[data-new-member-select]');
+    if(newMemberSelect) newMemberSelect.addEventListener('change', ()=>{
+      if(newMemberSelect.value) addProjectMember(newMemberSelect.dataset.newMemberSelect, newMemberSelect.value);
+    });
+    app.querySelectorAll('[data-retro-week-nav]').forEach(b=>b.addEventListener('click', ()=>{
+      retroWeekStart = addDays(getRetroWeekStart(), parseInt(b.dataset.retroWeekNav,10));
+      render();
+    }));
+    const saveRetroBtn = app.querySelector('[data-save-retro]');
+    if(saveRetroBtn) saveRetroBtn.addEventListener('click', ()=>{
+      const vals = {};
+      app.querySelectorAll('[data-retro-field]').forEach(el=>{ vals[el.dataset.retroField] = el.value; });
+      saveMyRetro(saveRetroBtn.dataset.saveRetro, getRetroWeekStart(), vals);
+    });
 
     app.querySelectorAll('[data-add-milestone-task]').forEach(inp=>inp.addEventListener('keydown', e=>{
       if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
     }));
     app.querySelectorAll('[data-delete-milestone]').forEach(b=>b.addEventListener('click', ()=>{ deleteMilestone(b.dataset.deleteMilestone); }));
-    app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; render(); }));
+    app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; retroWeekStart=null; render(); }));
     const backToProjectsBtn = app.querySelector('[data-back-to-projects]');
     if(backToProjectsBtn) backToProjectsBtn.addEventListener('click', ()=>{ selectedProjectId=null; render(); });
     const taskProjectPicker = app.querySelector('[data-task-project-picker]');
