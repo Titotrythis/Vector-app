@@ -879,9 +879,14 @@
     const existing = milestonesForProject(projectId);
     await runMutation(()=> sb.from('milestones').insert({ project_id:projectId, name, position:existing.length, status:'not_started' }));
   }
-  async function deleteMilestone(id){
+  async function deleteMilestoneWithReason(id, reason){
+    const m = state.milestones.find(x=>x.id===id); if(!m) return;
     if(tasksForMilestone(id).length>0){ appError = "Can't delete a milestone that still has linked tasks — unlink or move them first."; render(); return; }
-    await runMutation(()=> sb.from('milestones').delete().eq('id', id));
+    const { error } = await sb.from('milestones').delete().eq('id', id);
+    if(error){ appError=error.message; render(); return; }
+    await sb.from('audit_log').insert({ milestone_id:id, task_title:m.name, action:'delete_milestone', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
   async function createTaskForMilestone(milestoneId, title){
     title = (title||'').trim(); if(!title) return;
@@ -1486,6 +1491,69 @@
   }
 
   /* ---------------- Projects view ---------------- */
+  function renderOneProjectCard(p){
+    if(executiveView){
+      const h = projectHealth(p.id);
+      const pct = h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0;
+      const ring = `conic-gradient(${healthColor(h.bucket)} 0% ${pct}%, var(--line) ${pct}% 100%)`;
+      const openRisks = risksForProject(p.id).filter(r=>r.status==='open').length;
+      const openActions = actionsForProject(p.id).filter(a=>a.status==='open').length;
+      return `
+      <button class="card" style="display:flex;align-items:center;gap:18px;width:100%;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
+        <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
+          <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
+          <div style="position:absolute;inset:12px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
+            <span class="serif" style="font-weight:600;font-size:17px;">${pct}%</span>
+          </div>
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+            <span class="title">${escapeHtml(p.name)}</span>
+            <span style="font-size:10.5px;font-weight:700;border-radius:999px;padding:3px 10px;${healthPillStyle(h.bucket)}">${healthLabel(h.bucket)}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink-soft);">
+            <span><strong style="color:var(--danger);">${h.openBlockersCount}</strong> blocker${h.openBlockersCount===1?'':'s'} · <strong>${openRisks}</strong> risk${openRisks===1?'':'s'} · <strong style="color:var(--streak);">${openActions}</strong> action${openActions===1?'':'s'}</span>
+            <span style="color:var(--ink-faint);">${p.forecastCompletionDate ? `Forecast ${p.forecastCompletionDate}` : 'No forecast set'}</span>
+          </div>
+        </div>
+      </button>`;
+    }
+    const { counts, total } = milestoneStatusCounts(p.id);
+    const pct = total ? Math.round((counts.complete/total)*100) : 0;
+    const ring = projectRingGradient(counts, total);
+    const rows = [
+      ['Complete', counts.complete, 'var(--done)'],
+      ['Awaiting review', counts.awaiting_review, 'var(--streak)'],
+      ['In progress', counts.in_progress, 'var(--progress)'],
+      ['Not started', counts.not_started, 'var(--line-strong)'],
+    ];
+    return `
+    <button class="card" style="display:flex;align-items:center;gap:18px;width:100%;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
+      <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
+        <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
+        <div style="position:absolute;inset:12px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
+          <span class="serif" style="font-weight:600;font-size:17px;">${pct}%</span>
+        </div>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:2px;flex-wrap:wrap;">
+          <span class="title">${escapeHtml(p.name)}</span>
+          ${p.isPI ? `<span style="font-size:9.5px;font-weight:700;background:var(--suspended-bg);color:var(--suspended);border-radius:999px;padding:2px 7px;">PI</span>` : ''}
+          ${p.archived ? `<span style="font-size:9.5px;font-weight:700;background:var(--line-strong);color:var(--ink-soft);border-radius:999px;padding:2px 7px;">Archived</span>` : ''}
+        </div>
+        <div class="meta" style="margin-bottom:6px;">${total} ${p.isPI?'stage':'milestone'}${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Complete</span>` : ''}</div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          ${rows.filter(r=>r[1]>0).map(([label,count,color])=>`
+            <div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-soft);">
+              <span style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>
+              <span style="flex:1;">${label}</span>
+              <span style="color:var(--ink-faint);">${count}</span>
+            </div>`).join('')}
+        </div>
+      </div>
+    </button>`;
+  }
+
   function renderProjectsList(){
     const execActionsCount = openExecutiveActionsCount();
     return `
@@ -1512,71 +1580,21 @@
       <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-soft);width:max-content;cursor:pointer;">
         <input type="checkbox" data-show-archived ${showArchivedProjects?'checked':''} /> Show archived projects
       </label>` : ''}
-      ${state.projects.filter(p=>showArchivedProjects || !p.archived).length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : `
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;">
-        ${state.projects.filter(p=>showArchivedProjects || !p.archived).map(p=>{
-          if(executiveView){
-            const h = projectHealth(p.id);
-            const pct = h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0;
-            const ring = `conic-gradient(${healthColor(h.bucket)} 0% ${pct}%, var(--line) ${pct}% 100%)`;
-            const openRisks = risksForProject(p.id).filter(r=>r.status==='open').length;
-            const openActions = actionsForProject(p.id).filter(a=>a.status==='open').length;
-            return `
-            <button class="card" style="display:flex;align-items:center;gap:18px;width:100%;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
-              <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
-                <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
-                <div style="position:absolute;inset:12px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
-                  <span class="serif" style="font-weight:600;font-size:17px;">${pct}%</span>
-                </div>
-              </div>
-              <div style="flex:1;min-width:0;">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
-                  <span class="title">${escapeHtml(p.name)}</span>
-                  <span style="font-size:10.5px;font-weight:700;border-radius:999px;padding:3px 10px;${healthPillStyle(h.bucket)}">${healthLabel(h.bucket)}</span>
-                </div>
-                <div style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink-soft);">
-                  <span><strong style="color:var(--danger);">${h.openBlockersCount}</strong> blocker${h.openBlockersCount===1?'':'s'} · <strong>${openRisks}</strong> risk${openRisks===1?'':'s'} · <strong style="color:var(--streak);">${openActions}</strong> action${openActions===1?'':'s'}</span>
-                  <span style="color:var(--ink-faint);">${p.forecastCompletionDate ? `Forecast ${p.forecastCompletionDate}` : 'No forecast set'}</span>
-                </div>
-              </div>
-            </button>`;
-          }
-          const { counts, total } = milestoneStatusCounts(p.id);
-          const pct = total ? Math.round((counts.complete/total)*100) : 0;
-          const ring = projectRingGradient(counts, total);
-          const rows = [
-            ['Complete', counts.complete, 'var(--done)'],
-            ['Awaiting review', counts.awaiting_review, 'var(--streak)'],
-            ['In progress', counts.in_progress, 'var(--progress)'],
-            ['Not started', counts.not_started, 'var(--line-strong)'],
-          ];
-          return `
-          <button class="card" style="display:flex;align-items:center;gap:18px;width:100%;border-left:none;padding:18px 20px;" data-open-project="${p.id}">
-            <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
-              <div style="width:100%;height:100%;border-radius:50%;background:${ring};"></div>
-              <div style="position:absolute;inset:12px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;">
-                <span class="serif" style="font-weight:600;font-size:17px;">${pct}%</span>
-              </div>
-            </div>
-            <div style="flex:1;min-width:0;">
-              <div style="display:flex;align-items:center;gap:7px;margin-bottom:2px;flex-wrap:wrap;">
-                <span class="title">${escapeHtml(p.name)}</span>
-                ${p.isPI ? `<span style="font-size:9.5px;font-weight:700;background:var(--suspended-bg);color:var(--suspended);border-radius:999px;padding:2px 7px;">PI</span>` : ''}
-                ${p.archived ? `<span style="font-size:9.5px;font-weight:700;background:var(--line-strong);color:var(--ink-soft);border-radius:999px;padding:2px 7px;">Archived</span>` : ''}
-              </div>
-              <div class="meta" style="margin-bottom:6px;">${total} ${p.isPI?'stage':'milestone'}${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Complete</span>` : ''}</div>
-              <div style="display:flex;flex-direction:column;gap:4px;">
-                ${rows.filter(r=>r[1]>0).map(([label,count,color])=>`
-                  <div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-soft);">
-                    <span style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>
-                    <span style="flex:1;">${label}</span>
-                    <span style="color:var(--ink-faint);">${count}</span>
-                  </div>`).join('')}
-              </div>
-            </div>
-          </button>`;
-        }).join('')}
-      </div>`}
+      ${(() => {
+        const visible = state.projects.filter(p=>showArchivedProjects || !p.archived);
+        if(visible.length===0) return `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>`;
+        const fullProjects = visible.filter(p=>!p.isPI);
+        const pis = visible.filter(p=>p.isPI);
+        const renderGrid = list => list.length===0 ? '' : `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;">
+          ${list.map(p=>renderOneProjectCard(p)).join('')}
+        </div>`;
+        return `
+        <div class="section-label" style="margin-top:0;">Full Projects</div>
+        ${fullProjects.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);margin-bottom:8px;">None yet.</p>` : renderGrid(fullProjects)}
+        <div class="section-label">Parallel Initiatives</div>
+        ${pis.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">None yet.</p>` : renderGrid(pis)}`;
+      })()}
       ${executiveView ? '' : `
       <div class="chart-card">
         <h3>New project</h3>
@@ -1713,7 +1731,7 @@
           <button class="primary-btn" style="background:var(--danger);" data-action="milestone_reject" data-taskid="${m.id}">Reject</button>
         </div>` : ''}
       ${m.status==='awaiting_review' && !canReview ? `<p style="font-size:11.5px;color:var(--ink-faint);margin-top:10px;">Awaiting sign-off from a Journey Architect.</p>` : ''}
-      ${isExpanded ? `<button class="del" style="margin-top:10px;background:none;border:none;color:var(--ink-faint);font-size:11.5px;" data-delete-milestone="${m.id}">Delete milestone</button>` : ''}
+      ${isExpanded ? `<button class="del" style="margin-top:10px;background:none;border:none;color:var(--ink-faint);font-size:11.5px;" data-request-delete-milestone="${m.id}">Delete milestone</button>` : ''}
     </div>`;
   }
 
@@ -2115,13 +2133,13 @@
     </div>`;
   }
 
-  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone', resolve_blocker:'Resolve blocker', close_executive_action:'Close executive action', archive_project:'Archive project', request_expunge:'Request expunge', decline_expunge:'Decline expunge request'};
-  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject', resolve_blocker:'Resolve', close_executive_action:'Close', archive_project:'Archive', request_expunge:'Request', decline_expunge:'Decline'};
-  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting', resolve_blocker:'resolving this blocker — describe how it was resolved', close_executive_action:'closing this action — describe how it was resolved', archive_project:'archiving this project', request_expunge:'requesting permanent deletion — this goes to a Journey Architect for authorization', decline_expunge:'declining this expunge request'};
+  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone', delete_milestone:'Delete milestone', resolve_blocker:'Resolve blocker', close_executive_action:'Close executive action', archive_project:'Archive project', request_expunge:'Request expunge', decline_expunge:'Decline expunge request'};
+  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject', delete_milestone:'Delete', resolve_blocker:'Resolve', close_executive_action:'Close', archive_project:'Archive', request_expunge:'Request', decline_expunge:'Decline'};
+  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting', delete_milestone:'deleting this milestone', resolve_blocker:'resolving this blocker — describe how it was resolved', close_executive_action:'closing this action — describe how it was resolved', archive_project:'archiving this project', request_expunge:'requesting permanent deletion — this goes to a Journey Architect for authorization', decline_expunge:'declining this expunge request'};
 
   function renderActionDialog(){
     const type = pendingAction.type;
-    const isMilestoneAction = type==='milestone_approve' || type==='milestone_reject';
+    const isMilestoneAction = type==='milestone_approve' || type==='milestone_reject' || type==='delete_milestone';
     const isProjectAction = type==='archive_project' || type==='request_expunge' || type==='decline_expunge';
     const t = type==='restore' ? state.trash.find(x=>x.id===pendingAction.taskId)
       : isMilestoneAction ? state.milestones.find(x=>x.id===pendingAction.taskId)
@@ -2141,7 +2159,7 @@
         <textarea class="notes" data-action-reason placeholder="Why are you ${ACTION_VERB[type]} this task?"></textarea>
         <div class="current-user-badge" style="margin-top:10px;"><span class="user-avatar">${escapeHtml(initialsFor(currentUserName()))}</span>${escapeHtml(currentUserName())}</div>
         <div id="action-error" style="color:var(--danger);font-size:12.5px;margin-top:8px;display:none;">Please write a reason.</div>
-        <button class="primary-btn" style="margin-top:16px;${type==='delete'?'background:var(--danger);':''}" data-confirm-action>${ACTION_CTA[type]}</button>
+        <button class="primary-btn" style="margin-top:16px;${(type==='delete'||type==='delete_milestone')?'background:var(--danger);':''}" data-confirm-action>${ACTION_CTA[type]}</button>
       </div>
     </div>`;
   }
@@ -2290,6 +2308,7 @@
         if(type==='restore') restoreTaskWithLog(taskId, reason, username);
         if(type==='milestone_approve') approveMilestone(taskId, reason);
         if(type==='milestone_reject') rejectMilestone(taskId, reason);
+        if(type==='delete_milestone') deleteMilestoneWithReason(taskId, reason);
         if(type==='resolve_blocker') resolveBlockerWithReason(taskId, reason);
         if(type==='archive_project') archiveProjectWithReason(taskId, reason);
         if(type==='request_expunge') requestExpungeWithReason(taskId, reason);
@@ -2406,7 +2425,12 @@
     app.querySelectorAll('[data-add-milestone-task]').forEach(inp=>inp.addEventListener('keydown', e=>{
       if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
     }));
-    app.querySelectorAll('[data-delete-milestone]').forEach(b=>b.addEventListener('click', ()=>{ deleteMilestone(b.dataset.deleteMilestone); }));
+    app.querySelectorAll('[data-request-delete-milestone]').forEach(b=>b.addEventListener('click', ()=>{
+      const id = b.dataset.requestDeleteMilestone;
+      if(tasksForMilestone(id).length>0){ appError = "Can't delete a milestone that still has linked tasks — unlink or move them first."; render(); return; }
+      pendingAction = { type:'delete_milestone', taskId:id };
+      render();
+    }));
     app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; retroWeekStart=null; expandedMilestoneId=null; editingRetro=false; newProjectIsPI=false; render(); }));
     app.querySelectorAll('[data-toggle-milestone]').forEach(b=>b.addEventListener('click', ()=>{
       const id = b.dataset.toggleMilestone;
