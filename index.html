@@ -888,9 +888,9 @@
     appError = null;
     await reloadAllData();
   }
-  async function createTaskForMilestone(milestoneId, title){
+  async function createTaskForMilestone(milestoneId, title, dueDate){
     title = (title||'').trim(); if(!title) return;
-    await runMutation(()=> sb.from('tasks').insert({ title, day: todayStr(), status:'todo', notes:'', priority:'low', created_by: currentUserId(), milestone_id: milestoneId }));
+    await runMutation(()=> sb.from('tasks').insert({ title, day: todayStr(), status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId(), milestone_id: milestoneId }));
   }
   async function setTaskMilestone(taskId, milestoneId){
     await runMutation(()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId));
@@ -1724,7 +1724,10 @@
       <div class="meta" style="margin-top:6px;">${done}/${tasks.length} task${tasks.length===1?'':'s'} done</div>
       ${isExpanded ? `
       ${tasks.length>0 ? `<div class="log-list" style="margin-top:10px;">${tasks.map(t=>`<div class="log-item" style="cursor:pointer;" data-open="${t.id}"><div class="log-item-title">${escapeHtml(t.title)}</div><div class="log-item-time">${statusLabel(t.status)}</div></div>`).join('')}</div>` : ''}
-      <div class="add-sub"><input type="text" placeholder="Add a task to this milestone…" data-add-milestone-task="${m.id}" /></div>` : ''}
+      <div class="add-sub">
+        <input type="text" placeholder="Add a task to this milestone…" data-add-milestone-task="${m.id}" />
+        <input type="date" class="due-input" style="flex:0 0 140px;" title="Due date" data-add-milestone-task-due="${m.id}" />
+      </div>` : ''}
       ${m.status==='awaiting_review' && canReview ? `
         <div style="display:flex;gap:8px;margin-top:12px;">
           <button class="primary-btn" data-action="milestone_approve" data-taskid="${m.id}">Approve</button>
@@ -2423,7 +2426,11 @@
     app.querySelectorAll('[data-edit-retro]').forEach(b=>b.addEventListener('click', ()=>{ editingRetro = true; render(); }));
 
     app.querySelectorAll('[data-add-milestone-task]').forEach(inp=>inp.addEventListener('keydown', e=>{
-      if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
+      if(e.key==='Enter'){
+        const mid = inp.dataset.addMilestoneTask;
+        const dueInput = app.querySelector(`[data-add-milestone-task-due="${mid}"]`);
+        createTaskForMilestone(mid, inp.value, dueInput ? dueInput.value : null);
+      }
     }));
     app.querySelectorAll('[data-request-delete-milestone]').forEach(b=>b.addEventListener('click', ()=>{
       const id = b.dataset.requestDeleteMilestone;
