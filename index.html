@@ -155,6 +155,10 @@
 
   .trash-wrap{padding:0 20px 24px;}
   .trash-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+  .log-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
+  .log-grid::-webkit-scrollbar{display:none;}
+  @media (max-width:1100px){ .log-grid{grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:640px){ .log-grid{grid-template-columns:1fr;} }
   .trash-item{background:var(--surface-alt);border-radius:12px;padding:12px 14px;}
   @media (max-width:1100px){ .trash-grid{grid-template-columns:repeat(2,1fr);} }
   @media (max-width:640px){ .trash-grid{grid-template-columns:1fr;} }
@@ -214,7 +218,7 @@
   .timer-widget{display:flex;align-items:center;gap:12px;background:var(--surface-alt);border-radius:12px;padding:10px 14px;margin:2px 0 16px;}
   .timer-digital{font-family:'Fraunces';font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;}
   .timer-sub{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
-  .primary-btn{border:none;background:var(--ink);color:#fff;padding:10px 16px;border-radius:9px;font-weight:600;font-size:14px;width:100%;}
+  .primary-btn{border:none;background:var(--ink-soft);color:#fff;padding:10px 16px;border-radius:9px;font-weight:600;font-size:14px;width:100%;}
   .section-label{font-size:12px;font-weight:700;letter-spacing:.03em;color:var(--ink-faint);margin:20px 0 8px;text-transform:uppercase;}
   .priority-row{display:flex;gap:6px;}
   .pri-btn{flex:1;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:8px 4px;font-size:11.5px;font-weight:600;color:var(--ink-soft);display:flex;align-items:center;justify-content:center;gap:5px;}
@@ -309,6 +313,8 @@
   let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [] };
   let retroWeekStart = null;
   let expandedMilestoneId = null;
+  let newProjectIsPI = false;
+  let editingRetro = false;
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
   let taskLinkProjectId = null;
@@ -490,7 +496,7 @@
       state.tasks = taskRows.filter(r=>!r.deleted).map(taskFromRow);
       state.trash = taskRows.filter(r=>r.deleted).map(taskFromRow);
       state.auditLog = (auditRes.data || []).map(auditFromRow);
-      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date }));
+      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date, isPI: !!r.is_pi }));
       state.milestones = (milestonesRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, name:r.name, position:r.position, status:r.status }));
       const [risksRes, blockersRes, actionsRes] = await Promise.all([
         sb.from('risks').select('*').order('created_at', {ascending:true}),
@@ -852,14 +858,16 @@
     });
     if(writes.length) await Promise.all(writes);
   }
-  async function createProject(name){
+  async function createProject(name, isPI){
     name = (name||'').trim(); if(!name) return;
-    const { data, error } = await sb.from('projects').insert({ name, description:'', created_by: currentUserId() }).select().single();
+    const { data, error } = await sb.from('projects').insert({ name, description:'', created_by: currentUserId(), is_pi: !!isPI }).select().single();
     if(error){ appError=error.message; render(); return; }
-    const rows = DEFAULT_MILESTONE_NAMES.map((n,i)=>({ project_id:data.id, name:n, position:i, status:'not_started' }));
-    const { error: mErr } = await sb.from('milestones').insert(rows);
-    if(mErr){ appError=mErr.message; }
-    else appError = null;
+    if(!isPI){
+      const rows = DEFAULT_MILESTONE_NAMES.map((n,i)=>({ project_id:data.id, name:n, position:i, status:'not_started' }));
+      const { error: mErr } = await sb.from('milestones').insert(rows);
+      if(mErr){ appError=mErr.message; }
+      else appError = null;
+    }
     await reloadAllData();
   }
   async function addMilestone(projectId, name){
@@ -1094,6 +1102,7 @@
   function fitScrollLists(){
     fitScrollListGroup('.cards, .log-list', 6);
     fitScrollListGroup('.resp-list', 3);
+    fitScrollListGroup('.log-grid', 8);
   }
 
   function fitCalendarHeight(){
@@ -1435,7 +1444,7 @@
           <div class="title">${escapeHtml(t.title)}</div>
           <div class="meta">Deleted by ${escapeHtml(t.deletedBy)} — ${escapeHtml(t.deleteReason||'')}</div>
           <div class="meta">${t.deletedAt ? new Date(t.deletedAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''}</div>
-          <button class="primary-btn" style="margin-top:10px;" data-action="restore" data-taskid="${t.id}">Restore</button>
+          <button class="resolve-btn" style="margin-top:10px;width:100%;" data-action="restore" data-taskid="${t.id}">Restore</button>
         </div>`).join('')}
       </div>`}
     </div>`;
@@ -1502,8 +1511,11 @@
               </div>
             </div>
             <div style="flex:1;min-width:0;">
-              <div class="title" style="margin-bottom:2px;">${escapeHtml(p.name)}</div>
-              <div class="meta" style="margin-bottom:6px;">${total} milestone${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Complete</span>` : ''}</div>
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:2px;flex-wrap:wrap;">
+                <span class="title">${escapeHtml(p.name)}</span>
+                ${p.isPI ? `<span style="font-size:9.5px;font-weight:700;background:var(--suspended-bg);color:var(--suspended);border-radius:999px;padding:2px 7px;">PI</span>` : ''}
+              </div>
+              <div class="meta" style="margin-bottom:6px;">${total} ${p.isPI?'stage':'milestone'}${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Complete</span>` : ''}</div>
               <div style="display:flex;flex-direction:column;gap:4px;">
                 ${rows.filter(r=>r[1]>0).map(([label,count,color])=>`
                   <div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-soft);">
@@ -1519,11 +1531,21 @@
       ${executiveView ? '' : `
       <div class="chart-card">
         <h3>New project</h3>
-        <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">Every project starts with 5 milestones — Define, Measure, Analyze, Improve, Control — which you can rename, reorder, add to, or remove afterward.</p>
-        <div class="add-row" style="margin-bottom:0;">
-          <input type="text" placeholder="Project name…" data-new-project-name />
+        <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 12px;">Choose the shape that fits — a full project plans in DMAIC phases, a Parallel Initiative starts with an empty stage list you build yourself.</p>
+        <div style="display:flex;gap:10px;margin-bottom:14px;">
+          <button type="button" style="flex:1;text-align:left;border:1.5px solid ${!newProjectIsPI?'var(--ink)':'var(--line)'};background:${!newProjectIsPI?'var(--surface-alt)':'var(--surface)'};border-radius:12px;padding:12px 14px;cursor:pointer;" data-project-type="full">
+            <div style="font-weight:700;font-size:13.5px;margin-bottom:3px;">Full Project</div>
+            <div style="font-size:11px;color:var(--ink-soft);">Seeds Define, Measure, Analyze, Improve, Control automatically</div>
+          </button>
+          <button type="button" style="flex:1;text-align:left;border:1.5px solid ${newProjectIsPI?'var(--ink)':'var(--line)'};background:${newProjectIsPI?'var(--surface-alt)':'var(--surface)'};border-radius:12px;padding:12px 14px;cursor:pointer;" data-project-type="pi">
+            <div style="font-weight:700;font-size:13.5px;margin-bottom:3px;">Parallel Initiative <span style="font-size:9.5px;font-weight:700;background:var(--suspended-bg);color:var(--suspended);border-radius:999px;padding:2px 7px;margin-left:3px;">PI</span></div>
+            <div style="font-size:11px;color:var(--ink-soft);">Starts empty — add your own stages, in any order, any number</div>
+          </button>
         </div>
-        <button class="primary-btn" style="margin-top:8px;" data-create-project>Create project</button>
+        <div class="add-row" style="margin-bottom:0;">
+          <input type="text" placeholder="${newProjectIsPI?'Initiative name…':'Project name…'}" data-new-project-name />
+        </div>
+        <button class="primary-btn" style="margin-top:8px;" data-create-project>Create ${newProjectIsPI?'initiative':'project'}</button>
       </div>`}
     </div>`;
   }
@@ -1588,13 +1610,17 @@
               ${members.map(m=>{
                 const e = retroFor(pid, m.userId, weekStart);
                 const val = e ? e[field] : '';
+                const isOwn = m.userId===currentUserId();
                 return val ? `
                 <div style="background:var(--surface);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow-card);">
-                  <div style="font-size:10px;font-weight:700;color:var(--ink-faint);margin-bottom:3px;">${escapeHtml(m.name)}</div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+                    <span style="font-size:10px;font-weight:700;color:var(--ink-faint);">${escapeHtml(m.name)}${isOwn?' (you)':''}</span>
+                    ${isOwn ? `<button type="button" style="all:unset;cursor:pointer;font-size:10.5px;color:var(--progress);font-weight:600;" data-edit-retro="${pid}">Edit</button>` : ''}
+                  </div>
                   <div style="font-size:12.5px;line-height:1.45;">${escapeHtml(val)}</div>
                 </div>` : `
                 <div style="border:1.5px dashed var(--line-strong);border-radius:10px;padding:10px 12px;">
-                  <div style="font-size:10px;font-weight:700;color:var(--ink-faint);margin-bottom:3px;">${escapeHtml(m.name)}</div>
+                  <div style="font-size:10px;font-weight:700;color:var(--ink-faint);margin-bottom:3px;">${escapeHtml(m.name)}${isOwn?' (you)':''}</div>
                   <div style="font-size:11.5px;color:var(--ink-faint);font-style:italic;">Not submitted yet</div>
                 </div>`;
               }).join('')}
@@ -1603,11 +1629,12 @@
       </div>`}
       <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:16px;">
         <div class="section-label" style="margin-top:0;">Your retro for this week</div>
+        ${editingRetro && mine ? `<p style="font-size:11.5px;color:var(--ink-faint);margin:-6px 0 10px;">Editing your existing entry for this week.</p>` : ''}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          <textarea class="notes" placeholder="What went well…" data-retro-field="wentWell">${escapeHtml(mine?mine.wentWell:'')}</textarea>
-          <textarea class="notes" placeholder="What didn't go well…" data-retro-field="notWell">${escapeHtml(mine?mine.notWell:'')}</textarea>
-          <textarea class="notes" placeholder="What I learned…" data-retro-field="learned">${escapeHtml(mine?mine.learned:'')}</textarea>
-          <textarea class="notes" placeholder="Next week's one priority…" data-retro-field="nextPriority">${escapeHtml(mine?mine.nextPriority:'')}</textarea>
+          <textarea class="notes" placeholder="What went well…" data-retro-field="wentWell">${(editingRetro && mine) ? escapeHtml(mine.wentWell) : ''}</textarea>
+          <textarea class="notes" placeholder="What didn't go well…" data-retro-field="notWell">${(editingRetro && mine) ? escapeHtml(mine.notWell) : ''}</textarea>
+          <textarea class="notes" placeholder="What I learned…" data-retro-field="learned">${(editingRetro && mine) ? escapeHtml(mine.learned) : ''}</textarea>
+          <textarea class="notes" placeholder="Next week's one priority…" data-retro-field="nextPriority">${(editingRetro && mine) ? escapeHtml(mine.nextPriority) : ''}</textarea>
         </div>
         <button class="primary-btn" style="margin-top:10px;" data-save-retro="${pid}">Save my retro</button>
       </div>
@@ -1691,9 +1718,9 @@
         ${ms.map(m=>renderMilestoneCard(m)).join('')}
       </div>
       <div class="chart-card">
-        <h3>Add milestone</h3>
+        <h3>Add ${project.isPI?'stage':'milestone'}</h3>
         <div class="add-row" style="margin-bottom:0;">
-          <input type="text" placeholder="Milestone name…" data-new-milestone-name="${pid}" />
+          <input type="text" placeholder="${project.isPI?'Stage name…':'Milestone name…'}" data-new-milestone-name="${pid}" />
         </div>
       </div>`}
 
@@ -1812,14 +1839,14 @@
     <div class="chart-card">
       <h3>Suspended tasks</h3>
       ${items.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">Nothing currently suspended.</p>` : `
-      <div class="log-list">
+      <div class="log-grid">
         ${items.map(t=>`
           <div class="log-item">
             <div class="log-item-title">${escapeHtml(t.title)}</div>
             <div class="log-item-time" data-suspend-elapsed="${t.id}">Suspended ${formatDuration(computeSuspendedElapsed(t))}</div>
           </div>`).join('')}
       </div>
-      ${items.length > 6 ? `<div class="scroll-hint">Scroll for ${items.length - 6} more</div>` : ''}`}
+      ${items.length > 8 ? `<div class="scroll-hint">Scroll to see ${items.length - 8} more</div>` : ''}`}
     </div>`;
   }
 
@@ -1878,7 +1905,7 @@
       <div class="chart-card">
         <h3>Deleted tasks log</h3>
         ${deletedEntries.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No deletions recorded.</p>` : `
-        <div class="log-list">
+        <div class="log-grid">
           ${deletedEntries.map(e=>`
             <div class="log-item">
               <div class="log-item-title">${escapeHtml(e.taskTitle)}</div>
@@ -1886,7 +1913,7 @@
               <div class="log-caption">— ${escapeHtml(e.username)}: ${escapeHtml(e.reason)}</div>
             </div>`).join('')}
         </div>
-        ${deletedEntries.length > 6 ? `<div class="scroll-hint">Scroll for ${deletedEntries.length - 6} more</div>` : ''}`}
+        ${deletedEntries.length > 8 ? `<div class="scroll-hint">Scroll to see ${deletedEntries.length - 8} more</div>` : ''}`}
       </div>
       <div class="chart-card">
         <h3>Backup</h3>
@@ -2193,10 +2220,11 @@
       render();
     }));
 
+    app.querySelectorAll('[data-project-type]').forEach(b=>b.addEventListener('click', ()=>{ newProjectIsPI = b.dataset.projectType==='pi'; render(); }));
     const createProjectBtn = app.querySelector('[data-create-project]');
     if(createProjectBtn) createProjectBtn.addEventListener('click', ()=>{
       const input = app.querySelector('[data-new-project-name]');
-      if(input) createProject(input.value);
+      if(input){ createProject(input.value, newProjectIsPI); newProjectIsPI = false; }
     });
     const newProjectInput = app.querySelector('[data-new-project-name]');
     if(newProjectInput) newProjectInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ createProject(newProjectInput.value); } });
@@ -2230,20 +2258,23 @@
     });
     app.querySelectorAll('[data-retro-week-nav]').forEach(b=>b.addEventListener('click', ()=>{
       retroWeekStart = addDays(getRetroWeekStart(), parseInt(b.dataset.retroWeekNav,10));
+      editingRetro = false;
       render();
     }));
     const saveRetroBtn = app.querySelector('[data-save-retro]');
     if(saveRetroBtn) saveRetroBtn.addEventListener('click', ()=>{
       const vals = {};
       app.querySelectorAll('[data-retro-field]').forEach(el=>{ vals[el.dataset.retroField] = el.value; });
+      editingRetro = false;
       saveMyRetro(saveRetroBtn.dataset.saveRetro, getRetroWeekStart(), vals);
     });
+    app.querySelectorAll('[data-edit-retro]').forEach(b=>b.addEventListener('click', ()=>{ editingRetro = true; render(); }));
 
     app.querySelectorAll('[data-add-milestone-task]').forEach(inp=>inp.addEventListener('keydown', e=>{
       if(e.key==='Enter'){ createTaskForMilestone(inp.dataset.addMilestoneTask, inp.value); }
     }));
     app.querySelectorAll('[data-delete-milestone]').forEach(b=>b.addEventListener('click', ()=>{ deleteMilestone(b.dataset.deleteMilestone); }));
-    app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; retroWeekStart=null; expandedMilestoneId=null; render(); }));
+    app.querySelectorAll('[data-open-project]').forEach(b=>b.addEventListener('click', ()=>{ selectedProjectId=b.dataset.openProject; retroWeekStart=null; expandedMilestoneId=null; editingRetro=false; newProjectIsPI=false; render(); }));
     app.querySelectorAll('[data-toggle-milestone]').forEach(b=>b.addEventListener('click', ()=>{
       const id = b.dataset.toggleMilestone;
       expandedMilestoneId = expandedMilestoneId===id ? null : id;
