@@ -314,6 +314,8 @@
   let retroWeekStart = null;
   let expandedMilestoneId = null;
   let newProjectIsPI = false;
+  let pendingExpunge = null;
+  let showArchivedProjects = false;
   let editingRetro = false;
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
@@ -496,7 +498,9 @@
       state.tasks = taskRows.filter(r=>!r.deleted).map(taskFromRow);
       state.trash = taskRows.filter(r=>r.deleted).map(taskFromRow);
       state.auditLog = (auditRes.data || []).map(auditFromRow);
-      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date, isPI: !!r.is_pi }));
+      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date, isPI: !!r.is_pi,
+        archived: !!r.archived, archivedBy: profileName(r.archived_by), archiveReason: r.archive_reason,
+        expungeRequested: !!r.expunge_requested, expungeRequestedBy: profileName(r.expunge_requested_by), expungeReason: r.expunge_reason, expungeDeclineReason: r.expunge_decline_reason }));
       state.milestones = (milestonesRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, name:r.name, position:r.position, status:r.status }));
       const [risksRes, blockersRes, actionsRes] = await Promise.all([
         sb.from('risks').select('*').order('created_at', {ascending:true}),
@@ -994,6 +998,37 @@
   async function setProjectForecastDate(id, date){
     await runMutation(()=> sb.from('projects').update({ forecast_completion_date: date||null }).eq('id', id));
   }
+  async function archiveProjectWithReason(id, reason){
+    const { error } = await sb.rpc('archive_project', { p_project_id:id, p_reason:reason });
+    if(error){ appError=error.message; render(); return; }
+    appError=null;
+    await reloadAllData();
+  }
+  async function unarchiveProject(id){
+    const { error } = await sb.rpc('unarchive_project', { p_project_id:id });
+    if(error){ appError=error.message; render(); return; }
+    appError=null;
+    await reloadAllData();
+  }
+  async function requestExpungeWithReason(id, reason){
+    const { error } = await sb.rpc('request_expunge', { p_project_id:id, p_reason:reason });
+    if(error){ appError=error.message; render(); return; }
+    appError=null;
+    await reloadAllData();
+  }
+  async function declineExpungeWithReason(id, reason){
+    const { error } = await sb.rpc('decline_expunge', { p_project_id:id, p_decline_reason:reason });
+    if(error){ appError=error.message; render(); return; }
+    appError=null;
+    await reloadAllData();
+  }
+  async function confirmExpunge(id){
+    const { error } = await sb.rpc('expunge_project', { p_project_id:id });
+    if(error){ appError=error.message; render(); return; }
+    appError=null;
+    if(selectedProjectId===id) selectedProjectId=null;
+    await reloadAllData();
+  }
 
   async function approveMilestone(id, reason){
     const { error } = await sb.rpc('approve_milestone', { p_milestone_id:id, p_reason:reason });
@@ -1029,7 +1064,7 @@
         ${view==='dashboard' ? renderDashboard() : ''}
       </main>
       ${isPhone ? renderTabbar() : ''}
-      ${pendingAction ? renderActionDialog() : (openTaskId ? renderModal(getTask(openTaskId)) : '')}
+      ${pendingExpunge ? renderExpungeDialog() : (pendingAction ? renderActionDialog() : (openTaskId ? renderModal(getTask(openTaskId)) : ''))}
       ${selectedSummaryDay ? renderDaySummary(selectedSummaryDay) : ''}
       ${futurePickerOpen ? renderFuturePicker() : ''}
     `;
@@ -1464,9 +1499,22 @@
         <span style="width:9px;height:9px;border-radius:50%;background:var(--streak);flex-shrink:0;"></span>
         <span style="font-size:13.5px;font-weight:600;color:#7A5B0E;">You have ${execActionsCount} executive action${execActionsCount===1?'':'s'} requiring attention</span>
       </div>` : ''}
-      ${state.projects.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : `
+      ${(!executiveView && canReviewMilestones() && state.projects.some(p=>p.expungeRequested)) ? `
+      <div style="background:rgba(166,65,42,0.08);border-radius:12px;padding:14px 18px;">
+        <div style="font-size:11px;font-weight:700;color:var(--danger);text-transform:uppercase;letter-spacing:.03em;margin-bottom:8px;">Pending expunge requests</div>
+        ${state.projects.filter(p=>p.expungeRequested).map(p=>`
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;">
+            <span style="font-size:13px;font-weight:600;">${escapeHtml(p.name)} <span style="font-weight:400;color:var(--ink-faint);">— requested by ${escapeHtml(p.expungeRequestedBy||'Unknown')}</span></span>
+            <button type="button" class="logout-btn" data-open-project="${p.id}">Review</button>
+          </div>`).join('')}
+      </div>` : ''}
+      ${!executiveView ? `
+      <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-soft);width:max-content;cursor:pointer;">
+        <input type="checkbox" data-show-archived ${showArchivedProjects?'checked':''} /> Show archived projects
+      </label>` : ''}
+      ${state.projects.filter(p=>showArchivedProjects || !p.archived).length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>` : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;">
-        ${state.projects.map(p=>{
+        ${state.projects.filter(p=>showArchivedProjects || !p.archived).map(p=>{
           if(executiveView){
             const h = projectHealth(p.id);
             const pct = h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0;
@@ -1514,6 +1562,7 @@
               <div style="display:flex;align-items:center;gap:7px;margin-bottom:2px;flex-wrap:wrap;">
                 <span class="title">${escapeHtml(p.name)}</span>
                 ${p.isPI ? `<span style="font-size:9.5px;font-weight:700;background:var(--suspended-bg);color:var(--suspended);border-radius:999px;padding:2px 7px;">PI</span>` : ''}
+                ${p.archived ? `<span style="font-size:9.5px;font-weight:700;background:var(--line-strong);color:var(--ink-soft);border-radius:999px;padding:2px 7px;">Archived</span>` : ''}
               </div>
               <div class="meta" style="margin-bottom:6px;">${total} ${p.isPI?'stage':'milestone'}${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Complete</span>` : ''}</div>
               <div style="display:flex;flex-direction:column;gap:4px;">
@@ -1668,6 +1717,41 @@
     </div>`;
   }
 
+  function renderProjectAdminSection(project){
+    const canReview = canReviewMilestones();
+    const isCreator = project.createdBy === currentUserId();
+
+    if(project.archived){
+      return `
+      <div class="chart-card" style="background:var(--surface-alt);">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <span style="font-size:11px;font-weight:700;background:var(--line-strong);color:var(--ink-soft);border-radius:999px;padding:3px 10px;">Archived</span>
+        </div>
+        <div style="font-size:12.5px;color:var(--ink-soft);">By ${escapeHtml(project.archivedBy||'Unknown')} — ${escapeHtml(project.archiveReason||'')}</div>
+        ${canReview ? `<button class="logout-btn" style="margin-top:10px;" data-unarchive-project="${project.id}">Unarchive</button>` : ''}
+      </div>`;
+    }
+
+    if(project.expungeRequested){
+      return `
+      <div class="chart-card" style="background:rgba(166,65,42,0.08);">
+        <div style="font-size:11px;font-weight:700;color:var(--danger);text-transform:uppercase;letter-spacing:.03em;margin-bottom:6px;">Expunge requested</div>
+        <div style="font-size:12.5px;color:var(--ink-soft);">By ${escapeHtml(project.expungeRequestedBy||'Unknown')} — ${escapeHtml(project.expungeReason||'')}</div>
+        ${canReview ? `
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button class="primary-btn" style="background:var(--danger);" data-open-expunge="${project.id}">Authorize &amp; expunge</button>
+          <button class="logout-btn" data-action="decline_expunge" data-taskid="${project.id}">Decline</button>
+        </div>` : `<p style="font-size:11.5px;color:var(--ink-faint);margin-top:8px;">Awaiting review from a Journey Architect.</p>`}
+      </div>`;
+    }
+
+    return `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+      ${canReview ? `<button class="logout-btn" data-action="archive_project" data-taskid="${project.id}">Archive project</button>` : ''}
+      ${canReview ? `<button class="logout-btn" style="color:var(--danger);" data-open-expunge="${project.id}">Expunge project</button>` : (isCreator ? `<button class="logout-btn" style="color:var(--danger);" data-action="request_expunge" data-taskid="${project.id}">Request expunge</button>` : '')}
+    </div>`;
+  }
+
   function renderProjectDetail(pid){
     const project = state.projects.find(p=>p.id===pid);
     if(!project) return `<div class="dash-wrap"><p style="color:var(--ink-faint);">Project not found.</p></div>`;
@@ -1687,6 +1771,7 @@
         <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Lead</button>
         <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
       </div>
+      ${executiveView ? '' : renderProjectAdminSection(project)}
       ${executiveView ? `
       <div class="chart-card">
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;">
@@ -2030,17 +2115,19 @@
     </div>`;
   }
 
-  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone', resolve_blocker:'Resolve blocker', close_executive_action:'Close executive action'};
-  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject', resolve_blocker:'Resolve', close_executive_action:'Close'};
-  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting', resolve_blocker:'resolving this blocker — describe how it was resolved', close_executive_action:'closing this action — describe how it was resolved'};
+  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone', resolve_blocker:'Resolve blocker', close_executive_action:'Close executive action', archive_project:'Archive project', request_expunge:'Request expunge', decline_expunge:'Decline expunge request'};
+  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject', resolve_blocker:'Resolve', close_executive_action:'Close', archive_project:'Archive', request_expunge:'Request', decline_expunge:'Decline'};
+  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting', resolve_blocker:'resolving this blocker — describe how it was resolved', close_executive_action:'closing this action — describe how it was resolved', archive_project:'archiving this project', request_expunge:'requesting permanent deletion — this goes to a Journey Architect for authorization', decline_expunge:'declining this expunge request'};
 
   function renderActionDialog(){
     const type = pendingAction.type;
     const isMilestoneAction = type==='milestone_approve' || type==='milestone_reject';
+    const isProjectAction = type==='archive_project' || type==='request_expunge' || type==='decline_expunge';
     const t = type==='restore' ? state.trash.find(x=>x.id===pendingAction.taskId)
       : isMilestoneAction ? state.milestones.find(x=>x.id===pendingAction.taskId)
       : type==='resolve_blocker' ? state.blockers.find(x=>x.id===pendingAction.taskId)
       : type==='close_executive_action' ? state.executiveActions.find(x=>x.id===pendingAction.taskId)
+      : isProjectAction ? state.projects.find(x=>x.id===pendingAction.taskId)
       : getTask(pendingAction.taskId);
     return `
     <div class="overlay" data-close-action>
@@ -2059,6 +2146,25 @@
     </div>`;
   }
 
+  function renderExpungeDialog(){
+    const p = state.projects.find(x=>x.id===pendingExpunge.projectId);
+    const name = p ? p.name : '';
+    return `
+    <div class="overlay" data-close-expunge>
+      <div class="modal" data-stop>
+        <div class="modal-head">
+          <h3 class="serif" style="margin:0;font-size:19px;">Expunge project</h3>
+          <button class="icon-btn" data-cancel-expunge>${ICONS.x}</button>
+        </div>
+        <p style="font-size:13px;color:var(--danger);font-weight:600;line-height:1.5;">This permanently deletes "${escapeHtml(name)}" and everything linked to it — milestones, tasks, subtasks, blockers, risks, executive actions, retrospectives. This cannot be undone.</p>
+        <div class="section-label">Type the project name to confirm</div>
+        <input type="text" class="field-input" placeholder="${escapeHtml(name)}" data-expunge-confirm-input />
+        <div id="expunge-error" style="color:var(--danger);font-size:12.5px;margin-top:8px;display:none;">Doesn't match — type the exact project name.</div>
+        <button class="primary-btn" style="margin-top:16px;background:var(--danger);" data-confirm-expunge>Expunge permanently</button>
+      </div>
+    </div>`;
+  }
+
   /* ---------------- Events ---------------- */
   function bindEvents(){
     const app = document.getElementById('app');
@@ -2071,6 +2177,8 @@
 
     app.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ taskFilter=b.dataset.filter; render(); }));
     app.querySelectorAll('[data-exec-toggle]').forEach(b=>b.addEventListener('click', ()=>{ executiveView = b.dataset.execToggle==='executive'; render(); }));
+    const showArchivedCheckbox = app.querySelector('[data-show-archived]');
+    if(showArchivedCheckbox) showArchivedCheckbox.addEventListener('change', ()=>{ showArchivedProjects = showArchivedCheckbox.checked; render(); });
 
     app.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{ view=b.dataset.nav; selectedSummaryDay=null; dueDropdownOpen=false; selectedProjectId=null; render(); }));
     app.querySelectorAll('[data-day]').forEach(b=>b.addEventListener('click', ()=>{
@@ -2141,6 +2249,28 @@
     if(actionOverlay){
       actionOverlay.addEventListener('click', e=>{ if(e.target===actionOverlay){ pendingAction=null; render(); } });
     }
+    app.querySelectorAll('[data-unarchive-project]').forEach(b=>b.addEventListener('click', ()=>{ unarchiveProject(b.dataset.unarchiveProject); }));
+    app.querySelectorAll('[data-open-expunge]').forEach(b=>b.addEventListener('click', ()=>{ pendingExpunge={projectId:b.dataset.openExpunge}; render(); }));
+    const expungeOverlay = app.querySelector('[data-close-expunge]');
+    if(expungeOverlay){
+      expungeOverlay.addEventListener('click', e=>{ if(e.target===expungeOverlay){ pendingExpunge=null; render(); } });
+    }
+    const cancelExpungeBtn = app.querySelector('[data-cancel-expunge]');
+    if(cancelExpungeBtn) cancelExpungeBtn.addEventListener('click', ()=>{ pendingExpunge=null; render(); });
+    const confirmExpungeBtn = app.querySelector('[data-confirm-expunge]');
+    if(confirmExpungeBtn){
+      confirmExpungeBtn.addEventListener('click', ()=>{
+        const input = app.querySelector('[data-expunge-confirm-input]');
+        const p = state.projects.find(x=>x.id===pendingExpunge.projectId);
+        if(!p || !input || input.value.trim() !== p.name){
+          document.getElementById('expunge-error').style.display='block';
+          return;
+        }
+        const pid = pendingExpunge.projectId;
+        pendingExpunge = null;
+        confirmExpunge(pid);
+      });
+    }
     const stopEls = app.querySelectorAll('[data-stop]');
     stopEls.forEach(el=>el.addEventListener('click', e=>e.stopPropagation()));
     const cancelActionBtn = app.querySelector('[data-cancel-action]');
@@ -2161,6 +2291,9 @@
         if(type==='milestone_approve') approveMilestone(taskId, reason);
         if(type==='milestone_reject') rejectMilestone(taskId, reason);
         if(type==='resolve_blocker') resolveBlockerWithReason(taskId, reason);
+        if(type==='archive_project') archiveProjectWithReason(taskId, reason);
+        if(type==='request_expunge') requestExpungeWithReason(taskId, reason);
+        if(type==='decline_expunge') declineExpungeWithReason(taskId, reason);
         if(type==='close_executive_action') closeExecutiveActionWithReason(taskId, reason);
         pendingAction=null; openTaskId=null; render();
       });
