@@ -208,6 +208,10 @@
   .cdetail .val.good{color:var(--active-day-fg);}
   .cdetail .val.bad{color:#8A3220;}
   .cdetail .val.none{color:var(--ink-faint);}
+  .tchart{width:100%;height:auto;display:block;overflow:visible;}
+  .tchart .tdot{cursor:pointer;outline:none;}
+  .tchart .tdot:hover .tr,.tchart .tdot:focus .tr{r:9;}
+  .tchart text{font-family:'IBM Plex Sans',sans-serif;}
   @media(max-width:767px){
     .cbar{width:14px;} .cbar.year{width:8px;}
     .cchart-col .cpair{gap:2px;}
@@ -363,6 +367,7 @@
   let calMonth = new Date();
   let dashRange = "month";
   let chartSelected = null;
+  let trendSel = {};
   let openTaskId = null;
   let pendingAction = null;
   let selectedSummaryDay = null;
@@ -1963,6 +1968,7 @@
           </div>
         </div>
       </div>`}
+      ${renderProjectTrend(pid)}
       ${executiveView ? '' : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:16px;">
         ${ms.map(m=>renderMilestoneCard(m)).join('')}
@@ -2191,6 +2197,127 @@
     </div>`;
   }
 
+  /* ---------------- Cumulative trend (created vs completed, running totals) ---------------- */
+  // Each point is the running total up to the end of that period, counted from the
+  // beginning of time (dashboard: scope-limited; project page: that project only),
+  // so the opening balance carried into the period is included.
+  function trendBuckets(tasks, mode, project){
+    const now = new Date(), Y = now.getFullYear(), M = now.getMonth();
+    const SHORT = THROUGHPUT_MONTHS.map(m=>m.slice(0,3));
+    const out = [];
+    if(mode==='month'){
+      const dim = new Date(Y, M+1, 0).getDate();
+      for(let w=1; w<=5; w++){
+        const startDay = (w-1)*7+1;
+        const endDay = w===5 ? dim : Math.min(w*7, dim);
+        if(startDay>dim) break;
+        out.push({ label:'Wk '+w, full:'Week '+w, start:new Date(Y,M,startDay,0,0,0,0).getTime(), end:new Date(Y,M,endDay,23,59,59,999).getTime() });
+      }
+    } else if(mode==='year'){
+      for(let m=0; m<12; m++) out.push({ label:SHORT[m], full:THROUGHPUT_MONTHS[m], start:new Date(Y,m,1).getTime(), end:new Date(Y,m+1,0,23,59,59,999).getTime() });
+    } else {
+      let first = new Date(project && project.createdAt ? project.createdAt : now);
+      tasks.forEach(t=>{ if(t.createdAt){ const d=new Date(t.createdAt); if(d<first) first=d; } });
+      let y=first.getFullYear(), m=first.getMonth();
+      const lastIdx = Y*12+M;
+      let startIdx = Math.max(y*12+m, lastIdx-17);
+      const multiYear = Math.floor(startIdx/12)!==Y;
+      for(let idx=startIdx; idx<=lastIdx; idx++){
+        const yy=Math.floor(idx/12), mm=idx%12;
+        out.push({ label: SHORT[mm]+(multiYear?' ’'+String(yy).slice(2):''), full:THROUGHPUT_MONTHS[mm]+' '+yy, start:new Date(yy,mm,1).getTime(), end:new Date(yy,mm+1,0,23,59,59,999).getTime() });
+      }
+    }
+    const nowTs = now.getTime();
+    const cr = tasks.filter(t=>t.createdAt).map(t=>new Date(t.createdAt).getTime());
+    const dn = tasks.filter(t=>t.status==='done' && t.completedAt).map(t=>new Date(t.completedAt).getTime());
+    let prevC = cr.filter(x=>x<out[0].start).length, prevD = dn.filter(x=>x<out[0].start).length;
+    out.forEach(b=>{
+      b.elapsed = b.start<=nowTs;
+      b.current = b.start<=nowTs && nowTs<=b.end;
+      if(b.elapsed){
+        b.cumC = cr.filter(x=>x<=b.end).length;
+        b.cumD = dn.filter(x=>x<=b.end).length;
+        b.addC = b.cumC-prevC; b.addD = b.cumD-prevD;
+        prevC=b.cumC; prevD=b.cumD;
+      }
+    });
+    return out;
+  }
+  function trendAxis(vals){
+    const hi = Math.max(1, ...vals), lo = Math.min(...vals);
+    const rough = hi/4;
+    const steps = [1,2,5,10,20,25,50,100,200,250,500,1000,2000,5000];
+    let step = steps.find(x=>x>=rough) || 5000;
+    let min = 0;
+    if(lo>=hi*0.5 && lo>0){ min = Math.floor((lo*0.8)/step)*step; }
+    let max = Math.ceil(hi/step)*step; if(max===hi && hi>0) max += step;
+    // keep about 4-5 intervals
+    while((max-min)/step>5) step = steps[steps.indexOf(step)+1] || step*2;
+    max = min + Math.ceil((hi-min)/step+0.0001)*step;
+    const ticks=[]; for(let v=min; v<=max; v+=step) ticks.push(v);
+    return { min, max, ticks };
+  }
+  function renderTrendChart(key, mode, tasks, project){
+    const b = trendBuckets(tasks, mode, project);
+    const el = b.filter(x=>x.elapsed);
+    const n = b.length;
+    const title = mode==='month' ? 'Cumulative trend by week' : mode==='year' ? 'Cumulative trend by month' : 'Cumulative trend since project start';
+    const empty = el.length===0 || (el[el.length-1].cumC===0 && el[el.length-1].cumD===0);
+    if(empty){
+      return `<div class="chart-card"><h3>${title}</h3><p style="font-size:13px;color:var(--ink-faint);margin:0;">No tasks yet to chart.</p></div>`;
+    }
+    const open0 = { c: b[0].elapsed ? b[0].cumC-b[0].addC : 0, d: b[0].elapsed ? b[0].cumD-b[0].addD : 0 };
+    const axis = trendAxis(el.flatMap(x=>[x.cumC,x.cumD]).concat([open0.c,open0.d]));
+    const PW=800, PH=210, LEFT=44, TOP=14, BOT=34, VW=LEFT+PW+4, VH=TOP+PH+BOT;
+    const xAt = i => LEFT + (i+0.5)*PW/n;
+    const yAt = v => TOP + PH - ((v-axis.min)/(axis.max-axis.min))*PH;
+    const f = v => v.toFixed(1);
+    const selI = trendSel[key];
+    const sel = (selI!==undefined && selI!==null && b[selI] && b[selI].elapsed) ? selI : null;
+    const ptsC = el.map((x,i)=>f(xAt(i))+','+f(yAt(x.cumC)));
+    const ptsD = el.map((x,i)=>f(xAt(i))+','+f(yAt(x.cumD)));
+    const gap = el.length>1 ? `<polygon points="${ptsC.concat(ptsD.slice().reverse()).join(' ')}" fill="rgba(98,99,107,0.16)"/>` : '';
+    const grid = axis.ticks.map(t=>`<line x1="${LEFT}" x2="${LEFT+PW}" y1="${f(yAt(t))}" y2="${f(yAt(t))}" stroke="${t===axis.min?'#B96A20':'#DCD4C1'}" stroke-width="${t===axis.min?2:1}"/><text x="${LEFT-10}" y="${f(yAt(t)+4)}" text-anchor="end" font-size="12" fill="#97968D">${t}</text>`).join('');
+    const xl = b.map((x,i)=>`<text x="${f(xAt(i))}" y="${TOP+PH+22}" text-anchor="middle" font-size="12" fill="${x.elapsed?'#97968D':'#C7BCA2'}">${escapeHtml(x.label)}</text>`).join('');
+    const band = sel!==null ? `<rect x="${f(xAt(sel)-PW/n/2)}" y="${TOP}" width="${f(PW/n)}" height="${PH}" rx="10" fill="#EFEAE1"/>` : '';
+    const line = (pts,c) => el.length>1 ? `<polyline points="${pts.join(' ')}" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>` : '';
+    const dot = (x,i,v,c,name) => `<g class="tdot" tabindex="0" role="button" data-trend-pick="${key}|${i}" aria-label="${escapeHtml(x.full)}: ${name} total ${v}"><title>${name} · ${v} total</title><circle cx="${f(xAt(i))}" cy="${f(yAt(v))}" r="16" fill="transparent"/><circle class="tr" cx="${f(xAt(i))}" cy="${f(yAt(v))}" r="7" fill="${c}" stroke="#F6F2E8" stroke-width="3"/></g>`;
+    const dotsC = el.map((x,i)=>dot(x,i,x.cumC,'#62636B','Created')).join('');
+    const dotsD = el.map((x,i)=>dot(x,i,x.cumD,'#3F7D58','Completed')).join('');
+    let detail='';
+    if(sel!==null){
+      const d=b[sel];
+      detail = `
+      <div class="cdetail">
+        <span class="serif" style="font-weight:500;font-size:17px;min-width:84px;">${escapeHtml(d.full)}</span>
+        <div><div class="lbl"><i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--ink-soft);margin-right:6px;"></i>Created, total</div><div class="val">${d.cumC}</div></div>
+        <div><div class="lbl"><i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--done);margin-right:6px;"></i>Completed, total</div><div class="val">${d.cumD}</div></div>
+        <div><div class="lbl">Open backlog</div><div class="val">${d.cumC-d.cumD}</div></div>
+        <span style="flex:1;font-size:12.5px;color:var(--ink-soft);">${d.current?'So far · ':''}+${d.addC} created, +${d.addD} completed this ${mode==='month'?'week':'month'}</span>
+        <button type="button" class="icon-btn" aria-label="Close details" data-trend-close="${key}">${ICONS.x}</button>
+      </div>`;
+    }
+    return `
+    <div class="chart-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+        <h3 style="margin:0;">${title}</h3>
+        <div class="clegend">
+          <span><i style="background:#62636B;border-radius:50%;"></i>Created</span>
+          <span><i style="background:#3F7D58;border-radius:50%;"></i>Completed</span>
+          <span><i style="background:rgba(98,99,107,0.16);width:16px;height:9px;"></i>Open backlog</span>
+          ${axis.min>0?`<span style="color:var(--ink-faint);">Axis starts at ${axis.min}</span>`:''}
+        </div>
+      </div>
+      <svg class="tchart" viewBox="0 0 ${VW} ${VH}" role="img" aria-label="${title}">${band}${grid}${gap}${line(ptsC,'#62636B')}${line(ptsD,'#3F7D58')}${dotsC}${dotsD}${xl}</svg>
+      ${detail}
+    </div>`;
+  }
+  function renderDashTrend(){ return renderTrendChart('dash', dashRange, state.tasks.filter(taskInScope), null); }
+  function renderProjectTrend(pid){
+    const project = state.projects.find(p=>p.id===pid);
+    return renderTrendChart('proj:'+pid, 'project', state.tasks.filter(t=>projectIdForTask(t)===pid), project);
+  }
+
   function renderDashboard(){
     const now = new Date();
     const inRange = t => {
@@ -2225,6 +2352,7 @@
         <div class="stat-card"><div class="num serif">${currentStreak()}</div><div class="lbl">Current streak</div></div>
       </div>
       ${renderThroughputChart()}
+      ${renderDashTrend()}
       ${renderPerformanceCard()}
       ${renderSuspendedLogCard()}
       <div class="chart-card">
@@ -2437,11 +2565,11 @@
     const logoutBtn = app.querySelector('[data-logout]');
     if(logoutBtn) logoutBtn.addEventListener('click', logout);
 
-    app.querySelectorAll('[data-scope]').forEach(b=>b.addEventListener('click', ()=>{ scope=b.dataset.scope; scopeUnitId=null; selectedSummaryDay=null; chartSelected=null; render(); }));
+    app.querySelectorAll('[data-scope]').forEach(b=>b.addEventListener('click', ()=>{ scope=b.dataset.scope; scopeUnitId=null; selectedSummaryDay=null; chartSelected=null; delete trendSel.dash; render(); }));
     const scopeUnitBtn = app.querySelector('[data-scope-unit]');
     if(scopeUnitBtn) scopeUnitBtn.addEventListener('click', ()=>{ unitPickerOpen = true; render(); });
     app.querySelectorAll('[data-pick-unit]').forEach(b=>b.addEventListener('click', ()=>{
-      scope='unit'; scopeUnitId=b.dataset.pickUnit; unitPickerOpen=false; addingUnit=false; selectedSummaryDay=null; chartSelected=null; render();
+      scope='unit'; scopeUnitId=b.dataset.pickUnit; unitPickerOpen=false; addingUnit=false; selectedSummaryDay=null; chartSelected=null; delete trendSel.dash; render();
     }));
     const closeUnitOverlay = app.querySelector('[data-close-unit-picker]');
     if(closeUnitOverlay) closeUnitOverlay.addEventListener('click', e=>{ if(e.target===closeUnitOverlay){ unitPickerOpen=false; addingUnit=false; render(); } });
@@ -2474,12 +2602,21 @@
       calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth()+parseInt(b.dataset.cal,10), 1);
       selectedSummaryDay = null; render();
     }));
-    app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; chartSelected=null; render(); }));
+    app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; chartSelected=null; delete trendSel.dash; render(); }));
     app.querySelectorAll('[data-chart-pick]').forEach(b=>b.addEventListener('click', ()=>{
       const i = parseInt(b.dataset.chartPick,10);
       chartSelected = chartSelected===i ? null : i;
       render();
     }));
+    app.querySelectorAll('[data-trend-pick]').forEach(g=>{
+      const go = ()=>{
+        const [k,i] = g.dataset.trendPick.split('|'); const idx = parseInt(i,10);
+        trendSel[k] = trendSel[k]===idx ? null : idx; render();
+      };
+      g.addEventListener('click', go);
+      g.addEventListener('keydown', e=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); go(); } });
+    });
+    app.querySelectorAll('[data-trend-close]').forEach(bn=>bn.addEventListener('click', ()=>{ trendSel[bn.dataset.trendClose]=null; render(); }));
     const chartCloseBtn = app.querySelector('[data-chart-close]');
     if(chartCloseBtn) chartCloseBtn.addEventListener('click', ()=>{ chartSelected=null; render(); });
 
