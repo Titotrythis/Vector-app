@@ -208,6 +208,18 @@
   .cdetail .val.good{color:var(--active-day-fg);}
   .cdetail .val.bad{color:#8A3220;}
   .cdetail .val.none{color:var(--ink-faint);}
+  .trow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:16px;}
+  .trow .chart-card{margin-bottom:0;min-width:0;}
+  .trow .cbar{width:18px;} .trow .cbar.year{width:11px;}
+  .trow .cpair{gap:2px;}
+  .trow .cchip{font-size:11px;padding:2px 6px;} .trow .cchip.year{font-size:9px;padding:1px 3px;}
+  .trow .cdetail{gap:16px;}
+  @media (max-width:899px){
+    .trow{grid-template-columns:1fr;}
+    .trow .cbar{width:30px;} .trow .cbar.year{width:20px;}
+    .trow .cpair{gap:4px;}
+    .trow .cchip{font-size:12.5px;padding:2px 9px;} .trow .cchip.year{font-size:11.5px;padding:2px 6px;}
+  }
   .tchart{width:100%;height:auto;display:block;overflow:visible;}
   .tchart .tdot{cursor:pointer;outline:none;}
   .tchart .tdot:hover .tr,.tchart .tdot:focus .tr{r:9;}
@@ -1968,7 +1980,6 @@
           </div>
         </div>
       </div>`}
-      ${renderProjectTrend(pid)}
       ${executiveView ? '' : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:16px;">
         ${ms.map(m=>renderMilestoneCard(m)).join('')}
@@ -2201,7 +2212,7 @@
   // Each point is the running total up to the end of that period, counted from the
   // beginning of time (dashboard: scope-limited; project page: that project only),
   // so the opening balance carried into the period is included.
-  function trendBuckets(tasks, mode, project){
+  function trendBuckets(tasks, mode){
     const now = new Date(), Y = now.getFullYear(), M = now.getMonth();
     const SHORT = THROUGHPUT_MONTHS.map(m=>m.slice(0,3));
     const out = [];
@@ -2215,17 +2226,6 @@
       }
     } else if(mode==='year'){
       for(let m=0; m<12; m++) out.push({ label:SHORT[m], full:THROUGHPUT_MONTHS[m], start:new Date(Y,m,1).getTime(), end:new Date(Y,m+1,0,23,59,59,999).getTime() });
-    } else {
-      let first = new Date(project && project.createdAt ? project.createdAt : now);
-      tasks.forEach(t=>{ if(t.createdAt){ const d=new Date(t.createdAt); if(d<first) first=d; } });
-      let y=first.getFullYear(), m=first.getMonth();
-      const lastIdx = Y*12+M;
-      let startIdx = Math.max(y*12+m, lastIdx-17);
-      const multiYear = Math.floor(startIdx/12)!==Y;
-      for(let idx=startIdx; idx<=lastIdx; idx++){
-        const yy=Math.floor(idx/12), mm=idx%12;
-        out.push({ label: SHORT[mm]+(multiYear?' ’'+String(yy).slice(2):''), full:THROUGHPUT_MONTHS[mm]+' '+yy, start:new Date(yy,mm,1).getTime(), end:new Date(yy,mm+1,0,23,59,59,999).getTime() });
-      }
     }
     const nowTs = now.getTime();
     const cr = tasks.filter(t=>t.createdAt).map(t=>new Date(t.createdAt).getTime());
@@ -2257,11 +2257,11 @@
     const ticks=[]; for(let v=min; v<=max; v+=step) ticks.push(v);
     return { min, max, ticks };
   }
-  function renderTrendChart(key, mode, tasks, project){
-    const b = trendBuckets(tasks, mode, project);
+  function renderTrendChart(key, mode, tasks){
+    const b = trendBuckets(tasks, mode);
     const el = b.filter(x=>x.elapsed);
     const n = b.length;
-    const title = mode==='month' ? 'Cumulative trend by week' : mode==='year' ? 'Cumulative trend by month' : 'Cumulative trend since project start';
+    const title = mode==='month' ? 'Cumulative trend by week' : 'Cumulative trend by month';
     const empty = el.length===0 || (el[el.length-1].cumC===0 && el[el.length-1].cumD===0);
     if(empty){
       return `<div class="chart-card"><h3>${title}</h3><p style="font-size:13px;color:var(--ink-faint);margin:0;">No tasks yet to chart.</p></div>`;
@@ -2312,11 +2312,7 @@
       ${detail}
     </div>`;
   }
-  function renderDashTrend(){ return renderTrendChart('dash', dashRange, state.tasks.filter(taskInScope), null); }
-  function renderProjectTrend(pid){
-    const project = state.projects.find(p=>p.id===pid);
-    return renderTrendChart('proj:'+pid, 'project', state.tasks.filter(t=>projectIdForTask(t)===pid), project);
-  }
+  function renderDashTrend(){ return renderTrendChart('dash', dashRange, state.tasks.filter(taskInScope)); }
 
   function renderDashboard(){
     const now = new Date();
@@ -2351,8 +2347,10 @@
         <div class="stat-card"><div class="num serif">${rate}%</div><div class="lbl">Completion rate</div></div>
         <div class="stat-card"><div class="num serif">${currentStreak()}</div><div class="lbl">Current streak</div></div>
       </div>
-      ${renderThroughputChart()}
-      ${renderDashTrend()}
+      <div class="trow">
+        ${renderThroughputChart()}
+        ${renderDashTrend()}
+      </div>
       ${renderPerformanceCard()}
       ${renderSuspendedLogCard()}
       <div class="chart-card">
