@@ -179,6 +179,40 @@
   .bar-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
   .bar{width:100%;background:var(--progress);border-radius:4px 4px 2px 2px;min-height:2px;}
   .bar-col .blabel{font-size:10px;color:var(--ink-faint);margin-top:5px;}
+  /* Throughput chart: created vs completed, grouped bars */
+  .cchart{display:flex;align-items:flex-end;height:192px;border-bottom:2px solid var(--progress);}
+  .cchart-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;border-radius:10px;}
+  .cchart-col.sel{background:var(--bg);}
+  .cpair{display:flex;align-items:flex-end;gap:4px;}
+  .cbar{position:relative;display:block;padding:0;border:0;cursor:pointer;width:30px;border-radius:5px 5px 0 0;}
+  .cbar.year{width:20px;border-radius:4px 4px 0 0;}
+  .cbar.created{background:var(--ink-soft);}
+  .cbar.done{background:var(--done);}
+  .cbar .ctip{display:none;position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%);white-space:nowrap;background:var(--ink);color:#fff;font-size:12px;font-weight:600;padding:5px 9px;border-radius:7px;z-index:5;pointer-events:none;}
+  .cbar:hover .ctip,.cbar:focus-visible .ctip{display:block;}
+  .cchip{font-size:12.5px;font-weight:700;padding:2px 9px;border-radius:999px;margin-bottom:8px;white-space:nowrap;border:1.5px solid transparent;}
+  .cchip.year{font-size:11.5px;padding:2px 6px;}
+  .cchip.good{background:var(--done-bg);color:var(--active-day-fg);}
+  .cchip.bad{background:#F0DAD3;color:#8A3220;}
+  .cchip.none{color:var(--ink-faint);}
+  .cchip.now{border-style:dashed;}
+  .cchip.good.now{border-color:var(--active-day-fg);}
+  .cchip.bad.now{border-color:#8A3220;}
+  .clabels{display:flex;margin-top:14px;}
+  .clabels div{flex:1;min-width:0;text-align:center;font-size:12px;color:var(--ink-faint);}
+  .clegend{display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-soft);}
+  .clegend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px;}
+  .cdetail{display:flex;align-items:center;gap:28px;flex-wrap:wrap;background:var(--surface);border-radius:12px;padding:12px 20px;margin-top:14px;box-shadow:var(--shadow-card);}
+  .cdetail .lbl{font-size:12px;color:var(--ink-soft);}
+  .cdetail .val{font-family:'Fraunces',serif;font-size:24px;font-weight:600;}
+  .cdetail .val.good{color:var(--active-day-fg);}
+  .cdetail .val.bad{color:#8A3220;}
+  .cdetail .val.none{color:var(--ink-faint);}
+  @media(max-width:767px){
+    .cbar{width:14px;} .cbar.year{width:8px;}
+    .cchart-col .cpair{gap:2px;}
+    .cchip{font-size:10.5px;padding:2px 5px;} .cchip.year{font-size:9px;padding:1px 3px;}
+  }
   .log-list{display:flex;flex-direction:column;gap:8px;margin-top:4px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
   .log-list::-webkit-scrollbar{display:none;}
   .resp-list{display:flex;flex-direction:column;gap:10px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
@@ -328,6 +362,7 @@
   let selectedDay = todayStr();
   let calMonth = new Date();
   let dashRange = "month";
+  let chartSelected = null;
   let openTaskId = null;
   let pendingAction = null;
   let selectedSummaryDay = null;
@@ -2065,6 +2100,97 @@
     </div>`;
   }
 
+  /* ---------------- Throughput chart (created vs completed) ---------------- */
+  // Created is counted by creation date, completed by completion date, both
+  // limited to the active scope. Deleted tasks are not counted as created work.
+  const THROUGHPUT_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  function throughputSeries(){
+    const now = new Date();
+    const isMonth = dashRange==='month';
+    const n = isMonth ? 5 : 12;
+    const labels = isMonth ? [1,2,3,4,5].map(w=>'Wk '+w) : THROUGHPUT_MONTHS.map(m=>m.slice(0,3));
+    const fulls = isMonth ? [1,2,3,4,5].map(w=>'Week '+w) : THROUGHPUT_MONTHS;
+    const created = new Array(n).fill(0), done = new Array(n).fill(0);
+    const bucket = ts => {
+      const d = new Date(ts);
+      if(isNaN(d) || d.getFullYear()!==now.getFullYear()) return -1;
+      if(isMonth){ if(d.getMonth()!==now.getMonth()) return -1; return Math.min(5, Math.ceil(d.getDate()/7)) - 1; }
+      return d.getMonth();
+    };
+    state.tasks.filter(taskInScope).forEach(t=>{
+      if(t.createdAt){ const b = bucket(t.createdAt); if(b>=0) created[b]++; }
+      if(t.status==='done' && t.completedAt){ const b = bucket(t.completedAt); if(b>=0) done[b]++; }
+    });
+    const cur = isMonth ? Math.min(5, Math.ceil(now.getDate()/7)) - 1 : now.getMonth();
+    return labels.map((label,i)=>({ label, full: fulls[i], created: created[i], done: done[i], current: i===cur }));
+  }
+  // change = (completed - created) / created. State comes from the raw counts,
+  // never from the rounded percentage.
+  function throughputMeasure(d){
+    const fmt = raw => { const a = Math.abs(raw); return (a>0 && a<1) ? a.toFixed(1) : String(Math.round(a)); };
+    if(d.created===0 && d.done===0) return { kind:'none', text:'\u2014' };
+    if(d.created===0) return { kind:'good', text:'\u25B2 +'+d.done+(d.done===1?' task':' tasks') };
+    if(d.done===d.created) return { kind:'good', text:'= 0%' };
+    const raw = ((d.done - d.created) / d.created) * 100;
+    return raw>0 ? { kind:'good', text:'\u25B2 +'+fmt(raw)+'%' } : { kind:'bad', text:'\u25BC \u2212'+fmt(raw)+'%' };
+  }
+  function throughputNote(d, m){
+    let note;
+    if(d.created===0 && d.done===0) note = 'nothing created or completed';
+    else if(d.created===0) note = 'completed with nothing created';
+    else if(d.done>d.created) note = 'more completed than created';
+    else if(d.done===d.created) note = 'completed matches created';
+    else note = 'fewer completed than created';
+    return d.current ? 'So far \u00B7 '+note : note.charAt(0).toUpperCase()+note.slice(1);
+  }
+  function renderThroughputChart(){
+    const data = throughputSeries();
+    const isYear = dashRange==='year';
+    const H = 150;
+    const max = Math.max(1, ...data.map(d=>Math.max(d.created, d.done)));
+    const barH = v => v ? Math.max(Math.round(v/max*H), 6) : 2;
+    const sel = (chartSelected!==null && data[chartSelected]) ? chartSelected : null;
+    const yc = isYear ? ' year' : '';
+    const cols = data.map((d,i)=>{
+      const m = throughputMeasure(d);
+      return `
+      <div class="cchart-col ${sel===i?'sel':''}">
+        <div class="cchip ${m.kind}${yc}${d.current?' now':''}">${m.text}</div>
+        <div class="cpair">
+          <button type="button" class="cbar created${yc}" style="height:${barH(d.created)}px;" data-chart-pick="${i}" aria-label="${d.full}: created ${d.created}"><span class="ctip">Created \u00B7 ${d.created}</span></button>
+          <button type="button" class="cbar done${yc}" style="height:${barH(d.done)}px;" data-chart-pick="${i}" aria-label="${d.full}: completed ${d.done}"><span class="ctip">Completed \u00B7 ${d.done}</span></button>
+        </div>
+      </div>`;
+    }).join('');
+    let detail = '';
+    if(sel!==null){
+      const d = data[sel], m = throughputMeasure(d);
+      detail = `
+      <div class="cdetail">
+        <span class="serif" style="font-weight:500;font-size:17px;min-width:84px;">${d.full}</span>
+        <div><div class="lbl"><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--ink-soft);margin-right:6px;"></i>Created</div><div class="val">${d.created}</div></div>
+        <div><div class="lbl"><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--done);margin-right:6px;"></i>Completed</div><div class="val">${d.done}</div></div>
+        <div><div class="lbl">Change</div><div class="val ${m.kind}">${m.text}</div></div>
+        <span style="flex:1;font-size:12.5px;color:var(--ink-soft);">${throughputNote(d, m)}</span>
+        <button type="button" class="icon-btn" aria-label="Close details" data-chart-close>${ICONS.x}</button>
+      </div>`;
+    }
+    return `
+    <div class="chart-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+        <h3 style="margin:0;">Throughput by ${isYear?'month':'week'}</h3>
+        <div class="clegend">
+          <span><i style="background:var(--ink-soft);"></i>Created</span>
+          <span><i style="background:var(--done);"></i>Completed</span>
+          <span style="color:var(--ink-faint);">Change = (completed &minus; created) &divide; created</span>
+        </div>
+      </div>
+      <div class="cchart">${cols}</div>
+      <div class="clabels">${data.map(d=>`<div>${d.label}</div>`).join('')}</div>
+      ${detail}
+    </div>`;
+  }
+
   function renderDashboard(){
     const now = new Date();
     const inRange = t => {
@@ -2078,23 +2204,6 @@
     const total = rangeTasks.length;
     const rate = total ? Math.round((completed/total)*100) : 0;
 
-    let chartLabels = [], chartValues = [];
-    if(dashRange==='month'){
-      const weeks = {};
-      rangeTasks.filter(t=>t.status==='done').forEach(t=>{
-        const d = strToDate(t.day); const wk = Math.ceil(d.getDate()/7);
-        weeks[wk] = (weeks[wk]||0)+1;
-      });
-      for(let w=1; w<=5; w++){ chartLabels.push('Wk '+w); chartValues.push(weeks[w]||0); }
-    } else {
-      const months = {};
-      rangeTasks.filter(t=>t.status==='done').forEach(t=>{
-        const d = strToDate(t.day); months[d.getMonth()] = (months[d.getMonth()]||0)+1;
-      });
-      const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      for(let m=0;m<12;m++){ chartLabels.push(names[m]); chartValues.push(months[m]||0); }
-    }
-    const maxVal = Math.max(1, ...chartValues);
     const allTasksById = {}; state.tasks.concat(state.trash).forEach(t=>{ allTasksById[t.id]=t; });
     const deletedEntries = state.auditLog.filter(e=>{
       if(e.action!=='delete') return false;
@@ -2115,12 +2224,7 @@
         <div class="stat-card"><div class="num serif">${rate}%</div><div class="lbl">Completion rate</div></div>
         <div class="stat-card"><div class="num serif">${currentStreak()}</div><div class="lbl">Current streak</div></div>
       </div>
-      <div class="chart-card">
-        <h3>Tasks completed ${dashRange==='month' ? 'by week' : 'by month'}</h3>
-        <div class="bars">
-          ${chartValues.map((v,i)=>`<div class="bar-col"><div class="bar" style="height:${(v/maxVal*100)||2}%;"></div><div class="blabel">${chartLabels[i]}</div></div>`).join('')}
-        </div>
-      </div>
+      ${renderThroughputChart()}
       ${renderPerformanceCard()}
       ${renderSuspendedLogCard()}
       <div class="chart-card">
@@ -2333,11 +2437,11 @@
     const logoutBtn = app.querySelector('[data-logout]');
     if(logoutBtn) logoutBtn.addEventListener('click', logout);
 
-    app.querySelectorAll('[data-scope]').forEach(b=>b.addEventListener('click', ()=>{ scope=b.dataset.scope; scopeUnitId=null; selectedSummaryDay=null; render(); }));
+    app.querySelectorAll('[data-scope]').forEach(b=>b.addEventListener('click', ()=>{ scope=b.dataset.scope; scopeUnitId=null; selectedSummaryDay=null; chartSelected=null; render(); }));
     const scopeUnitBtn = app.querySelector('[data-scope-unit]');
     if(scopeUnitBtn) scopeUnitBtn.addEventListener('click', ()=>{ unitPickerOpen = true; render(); });
     app.querySelectorAll('[data-pick-unit]').forEach(b=>b.addEventListener('click', ()=>{
-      scope='unit'; scopeUnitId=b.dataset.pickUnit; unitPickerOpen=false; addingUnit=false; selectedSummaryDay=null; render();
+      scope='unit'; scopeUnitId=b.dataset.pickUnit; unitPickerOpen=false; addingUnit=false; selectedSummaryDay=null; chartSelected=null; render();
     }));
     const closeUnitOverlay = app.querySelector('[data-close-unit-picker]');
     if(closeUnitOverlay) closeUnitOverlay.addEventListener('click', e=>{ if(e.target===closeUnitOverlay){ unitPickerOpen=false; addingUnit=false; render(); } });
@@ -2370,7 +2474,14 @@
       calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth()+parseInt(b.dataset.cal,10), 1);
       selectedSummaryDay = null; render();
     }));
-    app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; render(); }));
+    app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; chartSelected=null; render(); }));
+    app.querySelectorAll('[data-chart-pick]').forEach(b=>b.addEventListener('click', ()=>{
+      const i = parseInt(b.dataset.chartPick,10);
+      chartSelected = chartSelected===i ? null : i;
+      render();
+    }));
+    const chartCloseBtn = app.querySelector('[data-chart-close]');
+    if(chartCloseBtn) chartCloseBtn.addEventListener('click', ()=>{ chartSelected=null; render(); });
 
     const addInput = app.querySelector('[data-add-input]');
     if(addInput){
