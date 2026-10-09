@@ -310,14 +310,13 @@
   const POMODORO_SEC = 25*60;
   const PRIORITIES = ['urgent','veryhigh','high','low'];
 
-  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [], units: [] };
+  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [], units: [], taskShares: [] };
   let retroWeekStart = null;
   let expandedMilestoneId = null;
   let newProjectIsPI = false;
   let newProjectUnitId = '';
   let pendingExpunge = null;
   let showArchivedProjects = false;
-  let activeUnitFilter = null;
   let addingUnit = false;
   let editingRetro = false;
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
@@ -341,7 +340,9 @@
   let addDueMonth = new Date();
   let dueDropdownOpen = false;
   let keepDueOpen = false;
-  let taskFilter = 'all';
+  let scope = 'all';            // 'all' | 'mine' | 'unit'
+  let scopeUnitId = null;
+  let unitPickerOpen = false;
   let appError = null;
   let addTaskTitleDraft = '';
 
@@ -527,6 +528,8 @@
       }
       state.projectMembers = (membersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, name: profileName(r.user_id) }));
       state.retrospectives = (retrosRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, weekStart:r.week_start, wentWell:r.went_well, notWell:r.not_well, learned:r.learned, nextPriority:r.next_priority }));
+      const sharesRes = await sb.from('task_shares').select('*');
+      state.taskShares = sharesRes.error ? [] : (sharesRes.data || []).map(r=>({ id:r.id, taskId:r.task_id, userId:r.user_id, name: profileName(r.user_id) }));
       await reconcileMilestones();
       render();
       reloadInFlight = null;
@@ -547,6 +550,7 @@
       .on('postgres_changes', {event:'*', schema:'public', table:'projects'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'milestones'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'units'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'task_shares'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'risks'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'blockers'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'executive_actions'}, scheduleReload)
@@ -737,13 +741,52 @@
     await runMutation(()=> sb.from('subtasks').update({text:val}).eq('id', subId));
   }
 
+  /* ---------------- Scope: All / Mine / Unit ---------------- */
+  // A task's participants are its creator plus anyone it is shared with.
+  function isParticipant(t, uid){
+    return t.createdByUserId===uid || state.taskShares.some(s=>s.taskId===t.id && s.userId===uid);
+  }
+  function projectIdForTask(t){
+    const m = t.milestoneId ? state.milestones.find(m=>m.id===t.milestoneId) : null;
+    return m ? m.projectId : null;
+  }
+  function unitIdForTask(t){
+    const pid = projectIdForTask(t);
+    const p = pid ? state.projects.find(p=>p.id===pid) : null;
+    return p ? (p.unitId || null) : null;
+  }
+  // The one rule every view uses. Standalone tasks have no unit, so they only
+  // appear under All and Mine.
+  function taskInScope(t){
+    if(scope==='mine') return isParticipant(t, currentUserId());
+    if(scope==='unit') return !!scopeUnitId && unitIdForTask(t)===scopeUnitId;
+    return true;
+  }
+  function projectInScope(p){
+    if(scope==='mine') return p.createdBy===currentUserId();
+    if(scope==='unit') return !!scopeUnitId && p.unitId===scopeUnitId;
+    return true;
+  }
+  function scopeLabel(){
+    if(scope==='unit'){ const u = state.units.find(u=>u.id===scopeUnitId); return u ? u.code : 'Unit'; }
+    return scope==='mine' ? 'Mine' : 'All';
+  }
+  function sharesForTask(taskId){ return state.taskShares.filter(s=>s.taskId===taskId); }
+  function canManageShares(t){ return t.createdByUserId===currentUserId() || canReviewMilestones(); }
+  async function shareTask(taskId, userId){
+    if(!userId) return;
+    await runMutation(()=> sb.from('task_shares').insert({ task_id: taskId, user_id: userId, added_by: currentUserId() }));
+  }
+  async function unshareTask(shareId){
+    await runMutation(()=> sb.from('task_shares').delete().eq('id', shareId));
+  }
+
   /* ---------------- Streak math (personal, per logged-in user) ---------------- */
   function activeDaysSet(){
-    const uid = currentUserId();
     const set = new Set();
     state.tasks.concat(state.trash).forEach(t=>{
       if(!t.completedAt) return;
-      if(taskFilter==='mine' && t.completedByUserId!==uid) return;
+      if(!taskInScope(t)) return;
       set.add(dateToStr(new Date(t.completedAt)));
     });
     return set;
@@ -800,7 +843,7 @@
   }
   function performanceByUser(){
     const map = {};
-    state.tasks.forEach(t=>{
+    state.tasks.filter(taskInScope).forEach(t=>{
       const eff = taskEfficiency(t);
       if(!eff) return;
       const user = t.createdBy || 'Unknown';
@@ -1090,6 +1133,7 @@
       ${pendingExpunge ? renderExpungeDialog() : (pendingAction ? renderActionDialog() : (openTaskId ? renderModal(getTask(openTaskId)) : ''))}
       ${selectedSummaryDay ? renderDaySummary(selectedSummaryDay) : ''}
       ${futurePickerOpen ? renderFuturePicker() : ''}
+      ${unitPickerOpen ? renderUnitPicker() : ''}
     `;
     bindEvents();
     if(view==='calendar') fitCalendarHeight();
@@ -1232,8 +1276,9 @@
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <div class="streak-badge">${ICONS.flame}${currentStreak()} day streak</div>
         <div class="filter-toggle">
-          <button data-filter="all" class="${taskFilter==='all'?'active':''}">All</button>
-          <button data-filter="mine" class="${taskFilter==='mine'?'active':''}">Mine</button>
+          <button data-scope="all" class="${scope==='all'?'active':''}">All</button>
+          <button data-scope="mine" class="${scope==='mine'?'active':''}">Mine</button>
+          <button data-scope-unit class="${scope==='unit'?'active':''}">${scope==='unit' ? 'Unit · '+escapeHtml(scopeLabel())+' ▾' : 'Unit'}</button>
         </div>
         <div class="current-user-badge"><span class="user-avatar">${escapeHtml(initialsFor(currentUserName()))}</span>${escapeHtml(currentUserName())}<button class="logout-btn" data-logout>sign out</button></div>
         <div class="nav-tabs">
@@ -1281,9 +1326,7 @@
     return todayStr();
   }
   function tasksForDay(day){
-    let list = state.tasks.filter(t=>effectiveDay(t)===day);
-    if(taskFilter==='mine') list = list.filter(t=>t.createdByUserId===currentUserId());
-    return list;
+    return state.tasks.filter(t=>effectiveDay(t)===day && taskInScope(t));
   }
 
   function renderBoard(isPhone){
@@ -1378,6 +1421,7 @@
         ${t.dueDate ? `<span>due ${t.dueDate}</span>` : ''}
         ${t.milestoneId ? `<span>${escapeHtml(milestoneName(t.milestoneId) || '')}</span>` : ''}
         <span>by ${escapeHtml(t.createdBy)}</span>
+        ${sharesForTask(t.id).length ? `<span>shared with ${sharesForTask(t.id).map(x=>escapeHtml(x.name)).join(', ')}</span>` : ''}
       </div>
       ${t.subtasks.length ? `<div class="card-progress-track"><div class="card-progress-fill" style="width:${Math.round((subDone/t.subtasks.length)*100)}%;"></div></div>` : ''}
       ${caption ? `<div class="log-caption">${caption}</div>` : ''}
@@ -1465,8 +1509,7 @@
 
   function renderDaySummary(ds){
     const uid = currentUserId();
-    let tasks = state.tasks.filter(t => t.completedAt && dateToStr(new Date(t.completedAt))===ds);
-    if(taskFilter==='mine') tasks = tasks.filter(t => t.completedByUserId===uid);
+    const tasks = state.tasks.filter(t => t.completedAt && dateToStr(new Date(t.completedAt))===ds && taskInScope(t));
     const label = strToDate(ds).toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'});
     return `
     <div class="overlay center" data-close-summary>
@@ -1480,7 +1523,7 @@
           ${tasks.map(t=>`<li>
             <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
               <span>${escapeHtml(t.title)}</span>
-              ${taskFilter==='all' ? `<span style="font-size:10.5px;color:var(--ink-faint);flex-shrink:0;">${escapeHtml(t.completedBy||'Unknown')}</span>` : ''}
+              ${(scope!=='mine' || t.completedByUserId!==uid) ? `<span style="font-size:10.5px;color:var(--ink-faint);flex-shrink:0;">${escapeHtml(t.completedBy||'Unknown')}</span>` : ''}
             </div>
             ${t.subtasks.length ? `<ul>${t.subtasks.map(s=>`<li>${escapeHtml(s.text)}</li>`).join('')}</ul>` : ''}
           </li>`).join('')}
@@ -1491,7 +1534,7 @@
 
   /* ---------------- Trash ---------------- */
   function renderTrash(){
-    const items = state.trash.slice().reverse();
+    const items = state.trash.filter(taskInScope).reverse();
     return `
     <div class="trash-wrap">
       <div class="section-label" style="margin-top:0;">Deleted tasks</div>
@@ -1574,34 +1617,43 @@
     </button>`;
   }
 
-  function renderUnitFilterRow(){
+  function renderUnitPicker(){
     const canManage = canReviewMilestones();
     return `
-    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-      ${state.units.map(u=>`
-        <button type="button" data-unit-filter="${u.id}" title="${escapeHtml(u.name)}"
-          style="border:1px solid ${activeUnitFilter===u.id?'var(--ink)':'var(--line-strong)'};background:${activeUnitFilter===u.id?'var(--ink)':'var(--surface)'};color:${activeUnitFilter===u.id?'#fff':'var(--ink-soft)'};border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:700;letter-spacing:.01em;">${escapeHtml(u.code)}</button>
-      `).join('')}
-      ${canManage ? `<button type="button" data-unit-add-toggle title="Add a unit" style="width:30px;height:30px;border-radius:50%;border:1px dashed var(--line-strong);background:var(--surface);color:var(--ink-soft);font-size:15px;font-weight:700;line-height:1;">+</button>` : ''}
-    </div>
-    ${addingUnit && canManage ? `
-    <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
-      <input type="text" placeholder="Unit name…" data-new-unit-name style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;width:150px;background:var(--surface);" />
-      <input type="text" placeholder="Code (e.g. BTU)" data-new-unit-code maxlength="8" style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;width:110px;background:var(--surface);text-transform:uppercase;" />
-      <button type="button" class="logout-btn" data-save-unit>Add</button>
-    </div>` : ''}`;
+    <div class="overlay center" data-close-unit-picker>
+      <div class="day-summary" data-stop style="max-width:340px;">
+        <div class="modal-head">
+          <h3 class="serif" style="margin:0;font-size:17px;">Choose a unit</h3>
+          <button class="icon-btn" data-close-unit-picker-btn>${ICONS.x}</button>
+        </div>
+        ${state.units.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);margin:10px 0;">No units yet.${canManage ? ' Add the first one below.' : ' Ask a Journey Architect to add them.'}</p>` : `
+        <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;">
+          ${state.units.map(u=>`
+          <button type="button" data-pick-unit="${u.id}" style="text-align:left;display:flex;align-items:center;gap:10px;border:1.5px solid ${scope==='unit'&&scopeUnitId===u.id?'var(--ink)':'var(--line)'};background:${scope==='unit'&&scopeUnitId===u.id?'var(--surface-alt)':'var(--surface)'};border-radius:12px;padding:11px 14px;cursor:pointer;">
+            <span style="font-size:12px;font-weight:700;min-width:46px;">${escapeHtml(u.code)}</span>
+            <span style="font-size:13px;color:var(--ink-soft);">${escapeHtml(u.name)}</span>
+          </button>`).join('')}
+        </div>`}
+        ${canManage ? `
+        <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:4px;">
+          ${addingUnit ? `
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input type="text" placeholder="Unit name…" data-new-unit-name style="flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;background:var(--surface);" />
+            <input type="text" placeholder="Code" data-new-unit-code maxlength="8" style="width:72px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;background:var(--surface);text-transform:uppercase;" />
+            <button type="button" class="logout-btn" data-save-unit>Add</button>
+          </div>` : `<button type="button" class="logout-btn" data-unit-add-toggle>+ Add a unit</button>`}
+        </div>` : ''}
+      </div>
+    </div>`;
   }
 
   function renderProjectsList(){
     const execActionsCount = openExecutiveActionsCount();
     return `
     <div class="dash-wrap">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:4px;">
-        <div class="filter-toggle" style="width:max-content;">
-          <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Lead</button>
-          <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
-        </div>
-        ${renderUnitFilterRow()}
+      <div class="filter-toggle" style="margin-bottom:4px;width:max-content;">
+        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Lead</button>
+        <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
       </div>
       ${executiveView && execActionsCount>0 ? `
       <div style="background:var(--streak-bg);border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:10px;">
@@ -1622,9 +1674,8 @@
         <input type="checkbox" data-show-archived ${showArchivedProjects?'checked':''} /> Show archived projects
       </label>` : ''}
       ${(() => {
-        let visible = state.projects.filter(p=>showArchivedProjects || !p.archived);
-        if(activeUnitFilter) visible = visible.filter(p=>p.unitId===activeUnitFilter);
-        if(visible.length===0) return `<p style="font-size:13px;color:var(--ink-faint);">${activeUnitFilter ? `No projects tagged ${escapeHtml(unitById(activeUnitFilter)?.code||'')} yet.` : 'No projects yet.'}</p>`;
+        const visible = state.projects.filter(p=>(showArchivedProjects || !p.archived) && projectInScope(p));
+        if(visible.length===0) return `<p style="font-size:13px;color:var(--ink-faint);">${scope==='unit' ? `No projects tagged ${escapeHtml(scopeLabel())} yet.` : scope==='mine' ? 'You haven\'t created any projects yet.' : 'No projects yet.'}</p>`;
         const fullProjects = visible.filter(p=>!p.isPI);
         const pis = visible.filter(p=>p.isPI);
         const renderGrid = list => list.length===0 ? '' : `
@@ -1998,7 +2049,7 @@
   }
 
   function renderSuspendedLogCard(){
-    const items = state.tasks.filter(t=>t.status==='suspended');
+    const items = state.tasks.filter(t=>t.status==='suspended' && taskInScope(t));
     return `
     <div class="chart-card">
       <h3>Suspended tasks</h3>
@@ -2022,7 +2073,7 @@
       if(dashRange==='month') return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
       return d.getFullYear()===now.getFullYear();
     };
-    const rangeTasks = state.tasks.filter(inRange);
+    const rangeTasks = state.tasks.filter(t=>taskInScope(t) && inRange(t));
     const completed = rangeTasks.filter(t=>t.status==='done').length;
     const total = rangeTasks.length;
     const rate = total ? Math.round((completed/total)*100) : 0;
@@ -2044,7 +2095,13 @@
       for(let m=0;m<12;m++){ chartLabels.push(names[m]); chartValues.push(months[m]||0); }
     }
     const maxVal = Math.max(1, ...chartValues);
-    const deletedEntries = state.auditLog.filter(e=>e.action==='delete').slice().reverse();
+    const allTasksById = {}; state.tasks.concat(state.trash).forEach(t=>{ allTasksById[t.id]=t; });
+    const deletedEntries = state.auditLog.filter(e=>{
+      if(e.action!=='delete') return false;
+      if(scope==='all') return true;
+      const t = allTasksById[e.taskId];
+      return !!t && taskInScope(t);
+    }).slice().reverse();
 
     return `
     <div class="dash-wrap">
@@ -2170,6 +2227,28 @@
           ${milestonesForProject(pickerProjectId).map(m=>`<option value="${m.id}" ${t.milestoneId===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
         </select>` : ''}
 
+        ${(() => {
+          const shares = sharesForTask(t.id);
+          const canShare = canManageShares(t);
+          const taken = new Set(shares.map(x=>x.userId).concat([t.createdByUserId]));
+          const options = state.profiles.filter(p=>!taken.has(p.id));
+          return `
+        <div class="section-label">Shared with</div>
+        ${shares.length===0 ? `<p style="font-size:12.5px;color:var(--ink-faint);margin:0 0 8px;">Only ${escapeHtml(t.createdBy||'the creator')}.</p>` : `
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+          ${shares.map(x=>`
+          <span style="display:inline-flex;align-items:center;gap:6px;background:var(--surface-alt);border-radius:999px;padding:5px 6px 5px 12px;font-size:12.5px;font-weight:600;">
+            ${escapeHtml(x.name)}
+            ${canShare ? `<button type="button" data-unshare="${x.id}" title="Remove" style="all:unset;cursor:pointer;width:18px;height:18px;border-radius:50%;text-align:center;color:var(--ink-faint);line-height:18px;">×</button>` : ''}
+          </span>`).join('')}
+        </div>`}
+        ${canShare ? `
+        <select class="field-input" data-share-picker="${t.id}">
+          <option value="">Share with a team member…</option>
+          ${options.map(p=>`<option value="${p.id}">${escapeHtml(p.display_name)}</option>`).join('')}
+        </select>` : `<p style="font-size:11.5px;color:var(--ink-faint);margin:0;">Only the creator or a Journey Architect can change who this is shared with.</p>`}`;
+        })()}
+
         <div class="section-label">Subtasks ${t.subtasks.length?`(${subDone}/${t.subtasks.length})`:''}</div>
         ${t.subtasks.map(s=>{
           const key = t.id+'|'+s.id;
@@ -2254,15 +2333,20 @@
     const logoutBtn = app.querySelector('[data-logout]');
     if(logoutBtn) logoutBtn.addEventListener('click', logout);
 
-    app.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ taskFilter=b.dataset.filter; render(); }));
+    app.querySelectorAll('[data-scope]').forEach(b=>b.addEventListener('click', ()=>{ scope=b.dataset.scope; scopeUnitId=null; selectedSummaryDay=null; render(); }));
+    const scopeUnitBtn = app.querySelector('[data-scope-unit]');
+    if(scopeUnitBtn) scopeUnitBtn.addEventListener('click', ()=>{ unitPickerOpen = true; render(); });
+    app.querySelectorAll('[data-pick-unit]').forEach(b=>b.addEventListener('click', ()=>{
+      scope='unit'; scopeUnitId=b.dataset.pickUnit; unitPickerOpen=false; addingUnit=false; selectedSummaryDay=null; render();
+    }));
+    const closeUnitOverlay = app.querySelector('[data-close-unit-picker]');
+    if(closeUnitOverlay) closeUnitOverlay.addEventListener('click', e=>{ if(e.target===closeUnitOverlay){ unitPickerOpen=false; addingUnit=false; render(); } });
+    const closeUnitBtn = app.querySelector('[data-close-unit-picker-btn]');
+    if(closeUnitBtn) closeUnitBtn.addEventListener('click', ()=>{ unitPickerOpen=false; addingUnit=false; render(); });
     app.querySelectorAll('[data-exec-toggle]').forEach(b=>b.addEventListener('click', ()=>{ executiveView = b.dataset.execToggle==='executive'; render(); }));
     const showArchivedCheckbox = app.querySelector('[data-show-archived]');
     if(showArchivedCheckbox) showArchivedCheckbox.addEventListener('change', ()=>{ showArchivedProjects = showArchivedCheckbox.checked; render(); });
 
-    app.querySelectorAll('[data-unit-filter]').forEach(b=>b.addEventListener('click', ()=>{
-      activeUnitFilter = activeUnitFilter===b.dataset.unitFilter ? null : b.dataset.unitFilter;
-      render();
-    }));
     const unitAddToggle = app.querySelector('[data-unit-add-toggle]');
     if(unitAddToggle) unitAddToggle.addEventListener('click', ()=>{ addingUnit = !addingUnit; render(); });
     const saveUnitBtn = app.querySelector('[data-save-unit]');
@@ -2527,6 +2611,9 @@
       if(!taskProjectPicker.value) setTaskMilestone(openTaskId, null);
       render();
     });
+    const sharePicker = app.querySelector('[data-share-picker]');
+    if(sharePicker) sharePicker.addEventListener('change', ()=>{ shareTask(sharePicker.dataset.sharePicker, sharePicker.value); });
+    app.querySelectorAll('[data-unshare]').forEach(b=>b.addEventListener('click', ()=>{ unshareTask(b.dataset.unshare); }));
     const taskMilestonePicker = app.querySelector('[data-task-milestone-picker]');
     if(taskMilestonePicker) taskMilestonePicker.addEventListener('change', ()=>{
       setTaskMilestone(taskMilestonePicker.dataset.taskMilestonePicker, taskMilestonePicker.value || null);
