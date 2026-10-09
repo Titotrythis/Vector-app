@@ -310,12 +310,15 @@
   const POMODORO_SEC = 25*60;
   const PRIORITIES = ['urgent','veryhigh','high','low'];
 
-  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [] };
+  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [], units: [] };
   let retroWeekStart = null;
   let expandedMilestoneId = null;
   let newProjectIsPI = false;
+  let newProjectUnitId = '';
   let pendingExpunge = null;
   let showArchivedProjects = false;
+  let activeUnitFilter = null;
+  let addingUnit = false;
   let editingRetro = false;
   const DEFAULT_MILESTONE_NAMES = ['Define','Measure','Analyze','Improve','Control'];
   let selectedProjectId = null;
@@ -484,21 +487,23 @@
   async function reloadAllData(){
     if(reloadInFlight) return reloadInFlight;
     reloadInFlight = (async ()=>{
-      const [profilesRes, tasksRes, auditRes, projectsRes, milestonesRes] = await Promise.all([
+      const [profilesRes, tasksRes, auditRes, projectsRes, milestonesRes, unitsRes] = await Promise.all([
         sb.from('profiles').select('*'),
         sb.from('tasks').select('*, subtasks(*)').order('created_at', {ascending:true}),
         sb.from('audit_log').select('*').order('created_at', {ascending:true}),
         sb.from('projects').select('*').order('created_at', {ascending:true}),
         sb.from('milestones').select('*').order('position', {ascending:true}),
+        sb.from('units').select('*').order('created_at', {ascending:true}),
       ]);
-      const err = profilesRes.error || tasksRes.error || auditRes.error || projectsRes.error || milestonesRes.error;
+      const err = profilesRes.error || tasksRes.error || auditRes.error || projectsRes.error || milestonesRes.error || unitsRes.error;
       if(err){ appError = err.message; render(); reloadInFlight = null; return; }
       state.profiles = profilesRes.data || [];
       const taskRows = tasksRes.data || [];
       state.tasks = taskRows.filter(r=>!r.deleted).map(taskFromRow);
       state.trash = taskRows.filter(r=>r.deleted).map(taskFromRow);
       state.auditLog = (auditRes.data || []).map(auditFromRow);
-      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date, isPI: !!r.is_pi,
+      state.units = (unitsRes.data || []).map(r=>({ id:r.id, name:r.name, code:r.code, createdBy:r.created_by }));
+      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date, isPI: !!r.is_pi, unitId: r.unit_id,
         archived: !!r.archived, archivedBy: profileName(r.archived_by), archiveReason: r.archive_reason,
         expungeRequested: !!r.expunge_requested, expungeRequestedBy: profileName(r.expunge_requested_by), expungeReason: r.expunge_reason, expungeDeclineReason: r.expunge_decline_reason }));
       state.milestones = (milestonesRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, name:r.name, position:r.position, status:r.status }));
@@ -541,6 +546,7 @@
       .on('postgres_changes', {event:'*', schema:'public', table:'profiles'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'projects'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'milestones'}, scheduleReload)
+      .on('postgres_changes', {event:'*', schema:'public', table:'units'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'risks'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'blockers'}, scheduleReload)
       .on('postgres_changes', {event:'*', schema:'public', table:'executive_actions'}, scheduleReload)
@@ -862,9 +868,21 @@
     });
     if(writes.length) await Promise.all(writes);
   }
-  async function createProject(name, isPI){
+  function unitById(id){ return state.units.find(u=>u.id===id); }
+  async function createUnit(name, code){
+    name = (name||'').trim(); code = (code||'').trim().toUpperCase();
+    if(!name || !code) return;
+    const { error } = await sb.from('units').insert({ name, code, created_by: currentUserId() });
+    if(error){ appError = error.message; render(); return; }
+    addingUnit = false;
+    await reloadAllData();
+  }
+  async function setProjectUnit(projectId, unitId){
+    await runMutation(()=> sb.from('projects').update({ unit_id: unitId||null }).eq('id', projectId));
+  }
+  async function createProject(name, isPI, unitId){
     name = (name||'').trim(); if(!name) return;
-    const { data, error } = await sb.from('projects').insert({ name, description:'', created_by: currentUserId(), is_pi: !!isPI }).select().single();
+    const { data, error } = await sb.from('projects').insert({ name, description:'', created_by: currentUserId(), is_pi: !!isPI, unit_id: unitId||null }).select().single();
     if(error){ appError=error.message; render(); return; }
     if(!isPI){
       const rows = DEFAULT_MILESTONE_NAMES.map((n,i)=>({ project_id:data.id, name:n, position:i, status:'not_started' }));
@@ -1510,6 +1528,7 @@
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
             <span class="title">${escapeHtml(p.name)}</span>
             <span style="font-size:10.5px;font-weight:700;border-radius:999px;padding:3px 10px;${healthPillStyle(h.bucket)}">${healthLabel(h.bucket)}</span>
+            ${p.unitId ? `<span style="font-size:9.5px;font-weight:700;background:var(--bg-deep);color:var(--ink-soft);border-radius:999px;padding:2px 8px;">${escapeHtml(unitById(p.unitId)?.code||'')}</span>` : ''}
           </div>
           <div style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink-soft);">
             <span><strong style="color:var(--danger);">${h.openBlockersCount}</strong> blocker${h.openBlockersCount===1?'':'s'} · <strong>${openRisks}</strong> risk${openRisks===1?'':'s'} · <strong style="color:var(--streak);">${openActions}</strong> action${openActions===1?'':'s'}</span>
@@ -1539,6 +1558,7 @@
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:2px;flex-wrap:wrap;">
           <span class="title">${escapeHtml(p.name)}</span>
           ${p.isPI ? `<span style="font-size:9.5px;font-weight:700;background:var(--suspended-bg);color:var(--suspended);border-radius:999px;padding:2px 7px;">PI</span>` : ''}
+          ${p.unitId ? `<span style="font-size:9.5px;font-weight:700;background:var(--bg-deep);color:var(--ink-soft);border-radius:999px;padding:2px 7px;">${escapeHtml(unitById(p.unitId)?.code||'')}</span>` : ''}
           ${p.archived ? `<span style="font-size:9.5px;font-weight:700;background:var(--line-strong);color:var(--ink-soft);border-radius:999px;padding:2px 7px;">Archived</span>` : ''}
         </div>
         <div class="meta" style="margin-bottom:6px;">${total} ${p.isPI?'stage':'milestone'}${total===1?'':'s'}${projectComplete(p.id) ? ` <span style="color:var(--done);font-weight:600;">· Complete</span>` : ''}</div>
@@ -1554,13 +1574,34 @@
     </button>`;
   }
 
+  function renderUnitFilterRow(){
+    const canManage = canReviewMilestones();
+    return `
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      ${state.units.map(u=>`
+        <button type="button" data-unit-filter="${u.id}" title="${escapeHtml(u.name)}"
+          style="border:1px solid ${activeUnitFilter===u.id?'var(--ink)':'var(--line-strong)'};background:${activeUnitFilter===u.id?'var(--ink)':'var(--surface)'};color:${activeUnitFilter===u.id?'#fff':'var(--ink-soft)'};border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:700;letter-spacing:.01em;">${escapeHtml(u.code)}</button>
+      `).join('')}
+      ${canManage ? `<button type="button" data-unit-add-toggle title="Add a unit" style="width:30px;height:30px;border-radius:50%;border:1px dashed var(--line-strong);background:var(--surface);color:var(--ink-soft);font-size:15px;font-weight:700;line-height:1;">+</button>` : ''}
+    </div>
+    ${addingUnit && canManage ? `
+    <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
+      <input type="text" placeholder="Unit name…" data-new-unit-name style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;width:150px;background:var(--surface);" />
+      <input type="text" placeholder="Code (e.g. BTU)" data-new-unit-code maxlength="8" style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;width:110px;background:var(--surface);text-transform:uppercase;" />
+      <button type="button" class="logout-btn" data-save-unit>Add</button>
+    </div>` : ''}`;
+  }
+
   function renderProjectsList(){
     const execActionsCount = openExecutiveActionsCount();
     return `
     <div class="dash-wrap">
-      <div class="filter-toggle" style="margin-bottom:4px;width:max-content;">
-        <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Lead</button>
-        <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:4px;">
+        <div class="filter-toggle" style="width:max-content;">
+          <button data-exec-toggle="practitioner" class="${!executiveView?'active':''}">Lead</button>
+          <button data-exec-toggle="executive" class="${executiveView?'active':''}">Executive</button>
+        </div>
+        ${renderUnitFilterRow()}
       </div>
       ${executiveView && execActionsCount>0 ? `
       <div style="background:var(--streak-bg);border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:10px;">
@@ -1581,8 +1622,9 @@
         <input type="checkbox" data-show-archived ${showArchivedProjects?'checked':''} /> Show archived projects
       </label>` : ''}
       ${(() => {
-        const visible = state.projects.filter(p=>showArchivedProjects || !p.archived);
-        if(visible.length===0) return `<p style="font-size:13px;color:var(--ink-faint);">No projects yet.</p>`;
+        let visible = state.projects.filter(p=>showArchivedProjects || !p.archived);
+        if(activeUnitFilter) visible = visible.filter(p=>p.unitId===activeUnitFilter);
+        if(visible.length===0) return `<p style="font-size:13px;color:var(--ink-faint);">${activeUnitFilter ? `No projects tagged ${escapeHtml(unitById(activeUnitFilter)?.code||'')} yet.` : 'No projects yet.'}</p>`;
         const fullProjects = visible.filter(p=>!p.isPI);
         const pis = visible.filter(p=>p.isPI);
         const renderGrid = list => list.length===0 ? '' : `
@@ -1609,9 +1651,13 @@
             <div style="font-size:11px;color:var(--ink-soft);">Starts empty — add your own stages, in any order, any number</div>
           </button>
         </div>
-        <div class="add-row" style="margin-bottom:0;">
+        <div class="add-row" style="margin-bottom:10px;">
           <input type="text" placeholder="${newProjectIsPI?'Initiative name…':'Project name…'}" data-new-project-name />
         </div>
+        <select class="field-input" data-new-project-unit>
+          <option value="">No unit (assign later)</option>
+          ${state.units.map(u=>`<option value="${u.id}" ${newProjectUnitId===u.id?'selected':''}>${escapeHtml(u.name)} (${escapeHtml(u.code)})</option>`).join('')}
+        </select>
         <button class="primary-btn" style="margin-top:8px;" data-create-project>Create ${newProjectIsPI?'initiative':'project'}</button>
       </div>`}
     </div>`;
@@ -1798,6 +1844,7 @@
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;">
           <h3 style="margin:0;">${escapeHtml(project.name)}</h3>
           <span style="font-size:11px;font-weight:700;border-radius:999px;padding:4px 11px;${healthPillStyle(h.bucket)}">Health: ${healthLabel(h.bucket)}</span>
+          ${project.unitId ? `<span style="font-size:10.5px;font-weight:700;background:var(--bg-deep);color:var(--ink-soft);border-radius:999px;padding:3px 10px;">${escapeHtml(unitById(project.unitId)?.code||'')}</span>` : ''}
         </div>
         <div class="stat-grid" style="margin-top:14px;">
           <div class="stat-card"><div class="num serif">${hPct}%</div><div class="lbl">Progress</div></div>
@@ -1816,8 +1863,19 @@
       <div class="chart-card">
         <h3 style="margin-bottom:4px;">${escapeHtml(project.name)}</h3>
         ${projectComplete(pid) ? `<p style="color:var(--done);font-weight:600;font-size:13px;margin:4px 0 0;">✓ Project complete</p>` : ''}
-        <div class="section-label" style="margin:16px 0 6px;">Forecast completion date</div>
-        <input type="date" class="field-input" style="max-width:220px;" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;">
+          <div style="flex:1;min-width:180px;">
+            <div class="section-label" style="margin-top:0;margin-bottom:6px;">Forecast completion date</div>
+            <input type="date" class="field-input" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
+          </div>
+          <div style="flex:1;min-width:180px;">
+            <div class="section-label" style="margin-top:0;margin-bottom:6px;">Unit</div>
+            <select class="field-input" data-project-unit="${pid}">
+              <option value="">Unassigned</option>
+              ${state.units.map(u=>`<option value="${u.id}" ${project.unitId===u.id?'selected':''}>${escapeHtml(u.name)} (${escapeHtml(u.code)})</option>`).join('')}
+            </select>
+          </div>
+        </div>
       </div>`}
       ${executiveView ? '' : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:16px;">
@@ -2201,6 +2259,21 @@
     const showArchivedCheckbox = app.querySelector('[data-show-archived]');
     if(showArchivedCheckbox) showArchivedCheckbox.addEventListener('change', ()=>{ showArchivedProjects = showArchivedCheckbox.checked; render(); });
 
+    app.querySelectorAll('[data-unit-filter]').forEach(b=>b.addEventListener('click', ()=>{
+      activeUnitFilter = activeUnitFilter===b.dataset.unitFilter ? null : b.dataset.unitFilter;
+      render();
+    }));
+    const unitAddToggle = app.querySelector('[data-unit-add-toggle]');
+    if(unitAddToggle) unitAddToggle.addEventListener('click', ()=>{ addingUnit = !addingUnit; render(); });
+    const saveUnitBtn = app.querySelector('[data-save-unit]');
+    if(saveUnitBtn) saveUnitBtn.addEventListener('click', ()=>{
+      const nameEl = app.querySelector('[data-new-unit-name]');
+      const codeEl = app.querySelector('[data-new-unit-code]');
+      createUnit(nameEl.value, codeEl.value);
+    });
+    const projectUnitSelect = app.querySelector('[data-project-unit]');
+    if(projectUnitSelect) projectUnitSelect.addEventListener('change', ()=>{ setProjectUnit(projectUnitSelect.dataset.projectUnit, projectUnitSelect.value); });
+
     app.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{ view=b.dataset.nav; selectedSummaryDay=null; dueDropdownOpen=false; selectedProjectId=null; render(); }));
     app.querySelectorAll('[data-day]').forEach(b=>b.addEventListener('click', ()=>{
       const n = parseInt(b.dataset.day,10);
@@ -2376,13 +2449,15 @@
     }));
 
     app.querySelectorAll('[data-project-type]').forEach(b=>b.addEventListener('click', ()=>{ newProjectIsPI = b.dataset.projectType==='pi'; render(); }));
+    const newProjectUnitSelect = app.querySelector('[data-new-project-unit]');
+    if(newProjectUnitSelect) newProjectUnitSelect.addEventListener('change', ()=>{ newProjectUnitId = newProjectUnitSelect.value; });
     const createProjectBtn = app.querySelector('[data-create-project]');
     if(createProjectBtn) createProjectBtn.addEventListener('click', ()=>{
       const input = app.querySelector('[data-new-project-name]');
-      if(input){ createProject(input.value, newProjectIsPI); newProjectIsPI = false; }
+      if(input){ createProject(input.value, newProjectIsPI, newProjectUnitId); newProjectIsPI = false; newProjectUnitId = ''; }
     });
     const newProjectInput = app.querySelector('[data-new-project-name]');
-    if(newProjectInput) newProjectInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ createProject(newProjectInput.value); } });
+    if(newProjectInput) newProjectInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ createProject(newProjectInput.value, newProjectIsPI, newProjectUnitId); newProjectIsPI = false; newProjectUnitId = ''; } });
     const newMilestoneInput = app.querySelector('[data-new-milestone-name]');
     if(newMilestoneInput) newMilestoneInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ addMilestone(newMilestoneInput.dataset.newMilestoneName, newMilestoneInput.value); } });
 
