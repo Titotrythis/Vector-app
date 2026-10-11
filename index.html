@@ -63,6 +63,22 @@
   .add-user-row input{flex:1;border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px;}
   .current-user-badge{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--ink-soft);background:var(--surface-alt);padding:5px 10px 5px 6px;border-radius:999px;}
   .current-user-badge .user-avatar{width:22px;height:22px;font-size:11px;}
+  .av{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;overflow:hidden;flex:none;background:var(--line);}
+  .av img{width:100%;height:100%;object-fit:cover;display:block;}
+  .av svg{display:block;}
+  .user-pill{position:relative;display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600;color:var(--ink-soft);background:var(--surface-alt);padding:4px 14px 4px 4px;border-radius:999px;border:0;cursor:pointer;box-shadow:var(--shadow-card);}
+  .user-wrap{position:relative;}
+  .user-menu{position:absolute;right:0;top:calc(100% + 8px);min-width:190px;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:6px;box-shadow:0 10px 30px rgba(35,32,26,0.18);z-index:60;display:flex;flex-direction:column;}
+  .user-menu button{border:0;background:none;text-align:left;padding:10px 12px;border-radius:8px;font-size:13px;font-weight:600;color:var(--ink);cursor:pointer;}
+  .user-menu button:hover{background:var(--surface-alt);}
+  .user-menu button.danger{color:#8A3220;}
+  .user-menu-backdrop{position:fixed;inset:0;z-index:55;background:transparent;}
+  .crop-win{position:relative;width:260px;height:260px;border-radius:50%;overflow:hidden;background:var(--bg-deep);box-shadow:0 0 0 4px #fff,0 0 0 6px var(--progress);touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;}
+  .crop-win img{position:absolute;left:50%;top:50%;max-width:none;pointer-events:none;-webkit-user-drag:none;}
+  .ghost-btn{border:none;background:var(--surface-alt);color:var(--ink);padding:10px 18px;border-radius:9px;font-weight:600;font-size:14px;cursor:pointer;}
+  .primary-btn:disabled,.ghost-btn:disabled{opacity:.55;cursor:default;}
+  .perf-person{display:flex;align-items:center;gap:14px;}
+  .perf-person .perf-body{flex:1;min-width:0;}
   .logout-btn{border:none;background:none;color:var(--ink-faint);font-size:11.5px;text-decoration:underline;padding:2px;}
 
   .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px 10px;position:sticky;top:0;z-index:40;background:var(--bg);}
@@ -395,6 +411,8 @@
   let scope = 'all';            // 'all' | 'mine' | 'unit'
   let scopeUnitId = null;
   let unitPickerOpen = false;
+  let userMenuOpen = false;
+  let avatarCrop = null; // { src, w, h, zoom, ox, oy, busy, err }
   let appError = null;
   let addTaskTitleDraft = '';
 
@@ -440,6 +458,123 @@
     return p ? p.display_name : 'Unknown';
   }
   function currentUserName(){ return profileName(currentUserId()); }
+
+  /* ---------------- Avatars ---------------- */
+  // Photos live in the public "avatars" Storage bucket (one 256px JPEG per person).
+  // The URL carries ?v=<updated time> so browsers can cache it for a year and still
+  // pick up a new photo straight away.
+  const AVATAR_SILHOUETTE = (px)=>`<svg viewBox="0 0 40 40" width="${px}" height="${px}" aria-hidden="true"><rect width="40" height="40" fill="#DCD4C1"/><circle cx="20" cy="15" r="7" fill="#97968D"/><path d="M5 40c0-9 6.7-14 15-14s15 5 15 14z" fill="#97968D"/></svg>`;
+  function avatarUrlFor(p){
+    if(!p || !p.avatar_path) return null;
+    try{
+      const base = sb.storage.from('avatars').getPublicUrl(p.avatar_path).data.publicUrl;
+      const v = p.avatar_updated_at ? new Date(p.avatar_updated_at).getTime() : 0;
+      return base + '?v=' + v;
+    }catch(e){ return null; }
+  }
+  function avatarHtml(profile, px, label){
+    const url = avatarUrlFor(profile);
+    return `<span class="av" style="width:${px}px;height:${px}px;"${label?` title="${escapeAttr(label)}"`:''}>${url ? `<img src="${escapeAttr(url)}" alt="" loading="lazy" width="${px}" height="${px}">` : AVATAR_SILHOUETTE(px)}</span>`;
+  }
+  function profileByName(name){ return state.profiles.find(p=>p.display_name===name) || null; }
+  function myProfile(){ return state.profiles.find(p=>p.id===currentUserId()) || null; }
+
+  function openAvatarFile(file){
+    if(!file) return;
+    if(!/^image\//.test(file.type)){ appError = 'Please choose an image file.'; render(); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = ()=>{
+      avatarCrop = { src:url, w:img.naturalWidth, h:img.naturalHeight, zoom:1, ox:0, oy:0, busy:false, err:null };
+      userMenuOpen = false; render();
+    };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); appError = 'That image could not be opened. Try a JPG or PNG.'; render(); };
+    img.src = url;
+  }
+  const CROP_WIN = 260;
+  function cropBaseScale(){ return CROP_WIN / Math.min(avatarCrop.w, avatarCrop.h); }
+  function clampCrop(){
+    const sc = cropBaseScale() * avatarCrop.zoom;
+    const maxX = Math.max(0, (avatarCrop.w*sc - CROP_WIN)/2);
+    const maxY = Math.max(0, (avatarCrop.h*sc - CROP_WIN)/2);
+    avatarCrop.ox = Math.max(-maxX, Math.min(maxX, avatarCrop.ox));
+    avatarCrop.oy = Math.max(-maxY, Math.min(maxY, avatarCrop.oy));
+  }
+  function cropImgStyle(){
+    const sc = cropBaseScale() * avatarCrop.zoom;
+    return `width:${(avatarCrop.w*sc).toFixed(1)}px;height:${(avatarCrop.h*sc).toFixed(1)}px;transform:translate(calc(-50% + ${avatarCrop.ox.toFixed(1)}px),calc(-50% + ${avatarCrop.oy.toFixed(1)}px));`;
+  }
+  function closeAvatarCrop(){
+    if(avatarCrop && avatarCrop.src) URL.revokeObjectURL(avatarCrop.src);
+    avatarCrop = null; render();
+  }
+  async function saveAvatar(){
+    if(!avatarCrop || avatarCrop.busy) return;
+    const uid = currentUserId(); if(!uid) return;
+    avatarCrop.busy = true; avatarCrop.err = null; render();
+    try{
+      const img = await new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=rej; i.src=avatarCrop.src; });
+      const OUT = 256, k = OUT / CROP_WIN;
+      const sc = cropBaseScale() * avatarCrop.zoom;
+      const dw = avatarCrop.w*sc, dh = avatarCrop.h*sc;
+      const cv = document.createElement('canvas'); cv.width = OUT; cv.height = OUT;
+      const cx = cv.getContext('2d');
+      cx.fillStyle = '#ffffff'; cx.fillRect(0,0,OUT,OUT);
+      cx.imageSmoothingQuality = 'high';
+      cx.drawImage(img, (CROP_WIN/2 + avatarCrop.ox - dw/2)*k, (CROP_WIN/2 + avatarCrop.oy - dh/2)*k, dw*k, dh*k);
+      let blob = await new Promise(r=>cv.toBlob(r, 'image/jpeg', 0.85));
+      if(blob && blob.size > 190*1024) blob = await new Promise(r=>cv.toBlob(r, 'image/jpeg', 0.7));
+      if(!blob) throw new Error('Could not prepare the photo.');
+      if(blob.size > 200*1024) throw new Error('That photo is still too large after shrinking. Try a different image.');
+      const path = uid + '.jpg';
+      const up = await sb.storage.from('avatars').upload(path, blob, { upsert:true, contentType:'image/jpeg', cacheControl:'31536000' });
+      if(up.error) throw up.error;
+      const rpc = await sb.rpc('set_my_avatar', { p_path: path });
+      if(rpc.error) throw rpc.error;
+      if(avatarCrop && avatarCrop.src) URL.revokeObjectURL(avatarCrop.src);
+      avatarCrop = null;
+      await reloadAllData();
+    }catch(e){
+      if(avatarCrop){ avatarCrop.busy = false; avatarCrop.err = (e && e.message) ? e.message : 'Could not save the photo. Has the avatars SQL been run?'; }
+      render();
+    }
+  }
+  async function removeMyAvatar(){
+    const uid = currentUserId(); if(!uid) return;
+    userMenuOpen = false;
+    try{
+      await sb.storage.from('avatars').remove([uid + '.jpg']);
+      const rpc = await sb.rpc('set_my_avatar', { p_path: null });
+      if(rpc.error) throw rpc.error;
+      await reloadAllData();
+    }catch(e){ appError = (e && e.message) || 'Could not remove the photo.'; render(); }
+  }
+  function renderAvatarModal(){
+    if(!avatarCrop) return '';
+    const c = avatarCrop;
+    return `
+    <div class="overlay" data-avatar-overlay style="align-items:center;">
+      <div class="modal" style="max-width:440px;border-radius:20px;text-align:center;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <h3 style="margin:0;font-family:'Fraunces';font-weight:500;font-size:20px;">Profile photo</h3>
+        </div>
+        <p style="font-size:13px;color:var(--ink-soft);margin:0 0 16px;">Drag to position and zoom so your face sits inside the circle. This is how it will look across Vector.</p>
+        <div style="display:flex;justify-content:center;margin-bottom:16px;">
+          <div class="crop-win" data-crop-win><img data-crop-img src="${escapeAttr(c.src)}" alt="" style="${cropImgStyle()}"></div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:6px;">
+          <button type="button" class="icon-btn" data-crop-zoom="-0.2" aria-label="Zoom out" style="font-size:20px;">&minus;</button>
+          <input type="range" data-crop-range min="1" max="3" step="0.01" value="${c.zoom}" style="width:180px;" aria-label="Zoom">
+          <button type="button" class="icon-btn" data-crop-zoom="0.2" aria-label="Zoom in" style="font-size:20px;">+</button>
+        </div>
+        ${c.err ? `<p style="font-size:12.5px;color:#8A3220;margin:10px 0 0;">${escapeHtml(c.err)}</p>` : ''}
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+          <button type="button" class="ghost-btn" data-avatar-cancel ${c.busy?'disabled':''}>Cancel</button>
+          <button type="button" class="primary-btn" data-avatar-save ${c.busy?'disabled':''} style="width:auto;padding:10px 22px;">${c.busy?'Saving…':'Save photo'}</button>
+        </div>
+      </div>
+    </div>`;
+  }
 
   async function submitSignIn(){
     authError = null; authNotice = null; authBusy = true; render();
@@ -1186,6 +1321,7 @@
       ${selectedSummaryDay ? renderDaySummary(selectedSummaryDay) : ''}
       ${futurePickerOpen ? renderFuturePicker() : ''}
       ${unitPickerOpen ? renderUnitPicker() : ''}
+      ${renderAvatarModal()}
     `;
     bindEvents();
     if(view==='calendar') fitCalendarHeight();
@@ -1332,13 +1468,23 @@
           <button data-scope="mine" class="${scope==='mine'?'active':''}">Mine</button>
           <button data-scope-unit class="${scope==='unit'?'active':''}">${scope==='unit' ? 'Unit · '+escapeHtml(scopeLabel())+' ▾' : 'Unit'}</button>
         </div>
-        <div class="current-user-badge"><span class="user-avatar">${escapeHtml(initialsFor(currentUserName()))}</span>${escapeHtml(currentUserName())}<button class="logout-btn" data-logout>sign out</button></div>
         <div class="nav-tabs">
           <button data-nav="projects" class="${view==='projects'?'active':''}">Projects</button>
           <button data-nav="board" class="${view==='board'?'active':''}">Board</button>
           <button data-nav="calendar" class="${view==='calendar'?'active':''}">Calendar</button>
           <button data-nav="trash" class="${view==='trash'?'active':''}">Trash</button>
           <button data-nav="dashboard" class="${view==='dashboard'?'active':''}">Dashboard</button>
+        </div>
+        <div class="user-wrap">
+          <button type="button" class="user-pill" data-user-menu aria-haspopup="menu" aria-expanded="${userMenuOpen}">${avatarHtml(myProfile(), 34)}<span>${escapeHtml(currentUserName())}</span></button>
+          ${userMenuOpen ? `
+          <div class="user-menu-backdrop" data-user-menu-close></div>
+          <div class="user-menu" role="menu">
+            <button type="button" role="menuitem" data-avatar-pick>${myProfile() && myProfile().avatar_path ? 'Change photo' : 'Add photo'}</button>
+            ${myProfile() && myProfile().avatar_path ? '<button type="button" role="menuitem" class="danger" data-avatar-remove>Remove photo</button>' : ''}
+            <button type="button" role="menuitem" data-logout>Sign out</button>
+          </div>` : ''}
+          <input type="file" accept="image/*" data-avatar-file hidden>
         </div>
       </div>
     </div>`;
@@ -2079,7 +2225,9 @@
         const meetsThreshold = total >= THRESHOLD;
         const effPct = meetsThreshold ? Math.round(((d.early+d.ontime)/total)*100) : null;
         return `
-        <div class="perf-block">
+        <div class="perf-block perf-person">
+          ${avatarHtml(profileByName(u), 44, u)}
+          <div class="perf-body">
           <div class="perf-user-label">${escapeHtml(u)} — ${total} task${total===1?'':'s'} tracked${d.overdue? `, avg ${avgOverdue} day${avgOverdue==1?'':'s'} overdue when late` : ''}</div>
           <div class="perf-row-flex">
             <div class="perf-bar-row" style="flex:1;margin-bottom:0;">
@@ -2094,6 +2242,7 @@
             <span><span class="legend-swatch" style="background:var(--pri-none);"></span>On time (${d.ontime})</span>
             <span><span class="legend-swatch" style="background:var(--danger);"></span>Overdue (${d.overdue})</span>
             ${!meetsThreshold ? `<span>${THRESHOLD-total} more tracked to unlock %</span>` : ''}
+          </div>
           </div>
         </div>`;
       }).join('')}
@@ -2564,6 +2713,35 @@
 
     const dismissErr = app.querySelector('[data-dismiss-error]');
     if(dismissErr) dismissErr.addEventListener('click', ()=>{ appError=null; render(); });
+
+    const userMenuBtn = app.querySelector('[data-user-menu]');
+    if(userMenuBtn) userMenuBtn.addEventListener('click', ()=>{ userMenuOpen = !userMenuOpen; render(); });
+    const userMenuClose = app.querySelector('[data-user-menu-close]');
+    if(userMenuClose) userMenuClose.addEventListener('click', ()=>{ userMenuOpen = false; render(); });
+    const avatarFile = app.querySelector('[data-avatar-file]');
+    const avatarPick = app.querySelector('[data-avatar-pick]');
+    if(avatarPick && avatarFile) avatarPick.addEventListener('click', ()=>{ avatarFile.click(); });
+    if(avatarFile) avatarFile.addEventListener('change', ()=>{ const f = avatarFile.files && avatarFile.files[0]; avatarFile.value=''; openAvatarFile(f); });
+    const avatarRemove = app.querySelector('[data-avatar-remove]');
+    if(avatarRemove) avatarRemove.addEventListener('click', removeMyAvatar);
+    const cropWin = app.querySelector('[data-crop-win]');
+    if(cropWin && avatarCrop){
+      const imgEl = cropWin.querySelector('[data-crop-img]');
+      const rangeEl = app.querySelector('[data-crop-range]');
+      const apply = ()=>{ clampCrop(); imgEl.setAttribute('style', cropImgStyle()); if(rangeEl) rangeEl.value = avatarCrop.zoom; };
+      let drag = null;
+      cropWin.addEventListener('pointerdown', e=>{ drag = {x:e.clientX, y:e.clientY, ox:avatarCrop.ox, oy:avatarCrop.oy}; cropWin.setPointerCapture(e.pointerId); cropWin.style.cursor='grabbing'; });
+      cropWin.addEventListener('pointermove', e=>{ if(!drag) return; avatarCrop.ox = drag.ox + (e.clientX-drag.x); avatarCrop.oy = drag.oy + (e.clientY-drag.y); apply(); });
+      const end = ()=>{ drag = null; cropWin.style.cursor='grab'; };
+      cropWin.addEventListener('pointerup', end); cropWin.addEventListener('pointercancel', end);
+      cropWin.addEventListener('wheel', e=>{ e.preventDefault(); avatarCrop.zoom = Math.max(1, Math.min(3, avatarCrop.zoom + (e.deltaY<0?0.1:-0.1))); apply(); }, {passive:false});
+      if(rangeEl) rangeEl.addEventListener('input', ()=>{ avatarCrop.zoom = parseFloat(rangeEl.value); apply(); });
+      app.querySelectorAll('[data-crop-zoom]').forEach(b=>b.addEventListener('click', ()=>{ avatarCrop.zoom = Math.max(1, Math.min(3, +(avatarCrop.zoom + parseFloat(b.dataset.cropZoom)).toFixed(2))); apply(); }));
+    }
+    const avatarSave = app.querySelector('[data-avatar-save]');
+    if(avatarSave) avatarSave.addEventListener('click', saveAvatar);
+    const avatarCancel = app.querySelector('[data-avatar-cancel]');
+    if(avatarCancel) avatarCancel.addEventListener('click', closeAvatarCrop);
 
     const logoutBtn = app.querySelector('[data-logout]');
     if(logoutBtn) logoutBtn.addEventListener('click', logout);
