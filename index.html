@@ -1052,6 +1052,22 @@
     const ms = milestonesForProject(pid);
     return ms.length>0 && ms.every(m=>m.status==='complete');
   }
+  /* Smooth project progress (0-100, exact). Every milestone is worth an equal share.
+     Approved milestone = full share. Open milestone = tasks done / tasks, up to GATE_CAP of its share;
+     the last (1-GATE_CAP) arrives only when the gate review approves the milestone. */
+  const GATE_CAP = 0.9;
+  function projectProgress(pid){
+    const ms = milestonesForProject(pid);
+    if(!ms.length) return 0;
+    let credit = 0;
+    ms.forEach(m=>{
+      if(m.status==='complete'){ credit += 1; return; }
+      const tasks = tasksForMilestone(m.id);
+      if(!tasks.length) return;
+      credit += GATE_CAP * (tasks.filter(t=>t.status==='done').length / tasks.length);
+    });
+    return (credit/ms.length)*100;
+  }
   function milestoneStatusLabel(s){ return {not_started:'Not started', in_progress:'In progress', awaiting_review:'Awaiting review', complete:'Complete'}[s] || s; }
   function milestoneStatusCounts(pid){
     const ms = milestonesForProject(pid);
@@ -1149,7 +1165,8 @@
     const ms = milestonesForProject(pid);
     const msTotal = ms.length;
     const msComplete = ms.filter(m=>m.status==='complete').length;
-    const msScore = msTotal ? (msComplete/msTotal)*100 : 0;
+    const progress = projectProgress(pid);
+    const msScore = progress;
 
     const linkedTasks = state.tasks.filter(t=>ms.some(m=>m.id===t.milestoneId));
     const taskTotal = linkedTasks.length;
@@ -1163,7 +1180,7 @@
 
     const score = Math.round(msScore*0.40 + overdueScore*0.25 + suspendedScore*0.15 + blockerScore*0.20);
     const bucket = score>=85 ? 'green' : score>=60 ? 'amber' : 'red';
-    return { score, bucket, msTotal, msComplete, openBlockersCount };
+    return { score, bucket, msTotal, msComplete, openBlockersCount, progress };
   }
   function healthColor(bucket){ return bucket==='green' ? 'var(--done)' : bucket==='amber' ? 'var(--streak)' : 'var(--danger)'; }
   function healthLabel(bucket){ return bucket==='green' ? 'Green' : bucket==='amber' ? 'Amber' : 'Red'; }
@@ -1758,8 +1775,9 @@
   function renderOneProjectCard(p){
     if(executiveView){
       const h = projectHealth(p.id);
-      const pct = h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0;
-      const ring = `conic-gradient(${healthColor(h.bucket)} 0% ${pct}%, var(--line) ${pct}% 100%)`;
+      const exact = h.progress;
+      const pct = Math.round(exact);
+      const ring = `conic-gradient(${healthColor(h.bucket)} 0% ${exact}%, var(--line) ${exact}% 100%)`;
       const openRisks = risksForProject(p.id).filter(r=>r.status==='open').length;
       const openActions = actionsForProject(p.id).filter(a=>a.status==='open').length;
       return `
@@ -1784,7 +1802,7 @@
       </button>`;
     }
     const { counts, total } = milestoneStatusCounts(p.id);
-    const pct = total ? Math.round((counts.complete/total)*100) : 0;
+    const pct = Math.round(projectProgress(p.id));
     const ring = projectRingGradient(counts, total);
     const rows = [
       ['Complete', counts.complete, 'var(--done)'],
@@ -2107,7 +2125,7 @@
     const linked = state.tasks.filter(t=>ms.some(m=>m.id===t.milestoneId));
     return {
       project, health:h,
-      pct: h.msTotal ? Math.round(h.msComplete/h.msTotal*100) : 0,
+      pct: Math.round(h.progress),
       completedPhases: ms.filter(m=>m.status==='complete').map(m=>m.name),
       phase: currentPhaseFor(pid),
       risks, blockers, actions,
@@ -2171,7 +2189,7 @@
     const openActions = actionsForProject(pid).filter(a=>a.status==='open');
     const closedActions = actionsForProject(pid).filter(a=>a.status==='closed');
     const h = executiveView ? projectHealth(pid) : null;
-    const hPct = h ? (h.msTotal ? Math.round((h.msComplete/h.msTotal)*100) : 0) : 0;
+    const hPct = h ? Math.round(h.progress) : 0;
     return `
     <div class="dash-wrap">
       <button class="logout-btn" style="margin-bottom:12px;" data-back-to-projects>&larr; All projects</button>
