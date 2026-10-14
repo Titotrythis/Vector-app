@@ -2196,19 +2196,17 @@
           <h3 style="margin:0;">${escapeHtml(project.name)}</h3>
           <span style="font-size:11px;font-weight:700;border-radius:999px;padding:4px 11px;${healthPillStyle(h.bucket)}">Health: ${healthLabel(h.bucket)}</span>
           ${project.unitId ? `<span style="font-size:10.5px;font-weight:700;background:var(--bg-deep);color:var(--ink-soft);border-radius:999px;padding:3px 10px;">${escapeHtml(unitById(project.unitId)?.code||'')}</span>` : ''}
+          <div style="margin-left:auto;display:flex;flex-direction:column;gap:4px;">
+            <div class="section-label" style="margin:0;">Forecast completion</div>
+            <input type="date" class="field-input" style="width:auto;" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
+          </div>
         </div>
-        <div class="stat-grid" style="margin-top:14px;">
+        <div class="stat-grid" style="margin-top:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
           <div class="stat-card"><div class="num serif">${hPct}%</div><div class="lbl">Progress</div></div>
           <div class="stat-card"><div class="num serif">${h.msComplete} / ${h.msTotal}</div><div class="lbl">Milestones complete</div></div>
           <div class="stat-card"><div class="num serif" style="color:var(--danger);">${openRisks.length}</div><div class="lbl">Open risks</div></div>
           <div class="stat-card"><div class="num serif" style="color:var(--danger);">${h.openBlockersCount}</div><div class="lbl">Open blockers</div></div>
-        </div>
-        <div class="stat-grid" style="margin-top:10px;grid-template-columns:repeat(2,1fr);">
           <div class="stat-card"><div class="num serif" style="color:var(--streak);">${openActions.length}</div><div class="lbl">Executive actions required</div></div>
-          <div class="stat-card">
-            <div class="section-label" style="margin-top:0;">Forecast completion</div>
-            <input type="date" class="field-input" value="${project.forecastCompletionDate||''}" data-forecast-date="${pid}" />
-          </div>
         </div>
       </div>` : `
       <div class="chart-card">
@@ -2239,6 +2237,35 @@
           <input type="text" placeholder="${project.isPI?'Stage name…':'Milestone name…'}" data-new-milestone-name="${pid}" />
         </div>
       </div>`}
+
+      <div class="chart-card" style="${executiveView?'background:var(--surface);':''}">
+        <h3>Risks</h3>
+        ${executiveView ? '' : `
+        <div class="add-row">
+          <input type="text" placeholder="Describe the risk — something that might go wrong…" data-new-risk-title="${pid}" />
+          <select class="due-input" style="width:130px;" data-new-risk-severity="${pid}">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select>
+        </div>`}
+        ${(openRisks.length+resolvedRisks.length)===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No risks logged.</p>` : `
+        <div class="resp-list">
+          ${openRisks.map(r=>`
+          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;">
+            <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(r.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(r.severity)}</span>
+            <div style="flex:1;min-width:0;font-size:14px;font-weight:600;">${escapeHtml(r.title)}</div>
+            ${executiveView ? '' : `<button type="button" class="resolve-btn" data-resolve-risk="${r.id}">Resolve</button>`}
+          </div>`).join('')}
+          ${resolvedRisks.map(r=>`
+          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;opacity:.6;">
+            <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(r.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(r.severity)}</span>
+            <div style="flex:1;min-width:0;font-size:14px;font-weight:600;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(r.title)}</div>
+            <span style="font-size:11.5px;color:var(--ink-faint);">Resolved</span>
+          </div>`).join('')}
+        </div>`}
+      </div>
 
       <div class="chart-card" style="${executiveView?'background:var(--surface);':''}">
         <h3>Blockers</h3>
@@ -3079,6 +3106,15 @@
 
     const forecastInput = app.querySelector('[data-forecast-date]');
     if(forecastInput) forecastInput.addEventListener('change', ()=>{ setProjectForecastDate(forecastInput.dataset.forecastDate, forecastInput.value); });
+
+    const newRiskTitle = app.querySelector('[data-new-risk-title]');
+    if(newRiskTitle) newRiskTitle.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){
+        const sev = app.querySelector('[data-new-risk-severity]');
+        createRisk(newRiskTitle.dataset.newRiskTitle, newRiskTitle.value, sev ? sev.value : 'medium');
+      }
+    });
+    app.querySelectorAll('[data-resolve-risk]').forEach(b=>b.addEventListener('click', ()=>{ resolveRisk(b.dataset.resolveRisk); }));
 
     const newBlockerTitle = app.querySelector('[data-new-blocker-title]');
     if(newBlockerTitle) newBlockerTitle.addEventListener('keydown', e=>{
