@@ -2068,6 +2068,108 @@
     </div>`;
   }
 
+  /* ---------------- Executive summary + current phase (Executive view) ---------------- */
+  // The wording is written straight from the project's numbers (no AI service involved),
+  // so it is instant, private and always matches what is on screen. executiveBriefFacts()
+  // is the single place a future on-device model could be pointed at.
+  const SEV_RANK = { critical:0, high:1, medium:2, low:3 };
+  function plural(n, one, many){ return n+' '+(n===1?one:(many||one+'s')); }
+  function joinNames(list){
+    if(list.length<=1) return list[0]||'';
+    if(list.length===2) return list[0]+' and '+list[1];
+    return list.slice(0,-1).join(', ')+' and '+list[list.length-1];
+  }
+  function longDate(ds){
+    if(!ds) return '';
+    const d = strToDate(ds);
+    return d.getDate()+' '+THROUGHPUT_MONTHS[d.getMonth()].slice(0,3)+' '+d.getFullYear();
+  }
+  function currentPhaseFor(pid){
+    const ms = milestonesForProject(pid);
+    const pick = ms.find(m=>m.status==='in_progress') || ms.find(m=>m.status==='awaiting_review') || ms.find(m=>m.status==='not_started');
+    if(!pick) return null;
+    const tasks = tasksForMilestone(pick.id);
+    return { m: pick, done: tasks.filter(t=>t.status==='done').length, total: tasks.length };
+  }
+  function executiveBriefFacts(pid){
+    const project = state.projects.find(p=>p.id===pid);
+    const h = projectHealth(pid);
+    const ms = milestonesForProject(pid);
+    const bySeverity = (a,b)=> (SEV_RANK[a.severity]??2) - (SEV_RANK[b.severity]??2);
+    const risks = risksForProject(pid).filter(r=>r.status==='open').sort(bySeverity);
+    const blockers = blockersForProject(pid).filter(b=>b.status==='open').sort(bySeverity);
+    const actions = actionsForProject(pid).filter(a=>a.status==='open');
+    const linked = state.tasks.filter(t=>ms.some(m=>m.id===t.milestoneId));
+    return {
+      project, health:h,
+      pct: h.msTotal ? Math.round(h.msComplete/h.msTotal*100) : 0,
+      completedPhases: ms.filter(m=>m.status==='complete').map(m=>m.name),
+      phase: currentPhaseFor(pid),
+      risks, blockers, actions,
+      overdue: linked.filter(isTaskOverdue).length,
+      complete: projectComplete(pid),
+      forecast: project ? project.forecastCompletionDate : null
+    };
+  }
+  function executiveSummaryText(f){
+    const name = f.project.name;
+    if(f.health.msTotal===0) return name+' has no milestones yet, so progress cannot be reported. Add milestones in the Lead view to start tracking.';
+    const out = [];
+    if(f.complete){
+      out.push(name+' is complete. Every milestone has passed gate review.');
+    } else {
+      out.push(name+' is currently '+f.pct+'% complete ('+f.health.msComplete+' of '+f.health.msTotal+' milestones). Overall health is '+healthLabel(f.health.bucket)+'.');
+      if(f.completedPhases.length===0) out.push('No milestone has been signed off yet.');
+      else out.push((f.completedPhases.length===1 ? 'The '+f.completedPhases[0]+' phase has' : joinNames(f.completedPhases)+' have')+' been completed.');
+      if(f.phase){
+        const n = f.phase.m.name, st = f.phase.m.status;
+        if(st==='in_progress') out.push('The '+n+' phase is in progress'+(f.phase.total ? ', with '+f.phase.done+' of '+plural(f.phase.total,'task')+' completed.' : ', with no tasks linked yet.'));
+        else if(st==='awaiting_review') out.push('The '+n+' phase has finished all its tasks and is awaiting gate review.');
+        else out.push('The '+n+' phase has not started.');
+      }
+    }
+    const top = [];
+    if(f.blockers.length) top.push(plural(f.blockers.length,'open blocker')+(f.blockers.length>1 ? ' (most serious: "'+f.blockers[0].title+'")' : ' ("'+f.blockers[0].title+'")'));
+    if(f.risks.length) top.push(plural(f.risks.length,'open risk')+(f.risks.length>1 ? ' (most serious: "'+f.risks[0].title+'")' : ' ("'+f.risks[0].title+'")'));
+    if(top.length) out.push('Progress is affected by '+joinNames(top)+'.');
+    else if(!f.complete) out.push('There are no open blockers or risks.');
+    if(f.overdue>0 && !f.complete) out.push(plural(f.overdue,'linked task')+' '+(f.overdue===1?'is':'are')+' overdue.');
+    if(f.actions.length) out.push(f.actions.length===1 ? 'One executive action requires attention: "'+f.actions[0].title+'".' : plural(f.actions.length,'executive action')+' require attention, starting with "'+f.actions[0].title+'".');
+    else if(!f.complete) out.push('No executive intervention is required.');
+    if(!f.complete){
+      if(f.forecast) out.push((f.forecast < todayStr() ? 'The forecast completion date of ' : 'Forecast completion is ')+longDate(f.forecast)+(f.forecast < todayStr() ? ' has passed.' : '.'));
+      else out.push('No forecast completion date has been set.');
+    }
+    return out.join(' ');
+  }
+  function renderExecutiveBrief(pid){
+    const f = executiveBriefFacts(pid);
+    if(!f.project) return '';
+    const p = f.phase;
+    const stLabel = p ? ({in_progress:'In progress', awaiting_review:'Awaiting review', not_started:'Not started'}[p.m.status]||'') : '';
+    const pct = p && p.total ? Math.round(p.done/p.total*100) : 0;
+    const list = (arr, empty) => arr.length ? arr.slice(0,3).map(x=>`<div style="font-size:13px;line-height:1.5;margin-bottom:4px;"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${severityColor(x.severity)};margin-right:7px;"></span>${escapeHtml(x.title)}</div>`).join('') + (arr.length>3 ? `<div style="font-size:12px;color:var(--ink-faint);">+${arr.length-3} more</div>` : '') : `<div style="font-size:13px;color:var(--ink-faint);">${empty}</div>`;
+    return `
+    <div class="chart-card" style="background:var(--surface);">
+      <h3 style="margin-bottom:10px;">Executive summary</h3>
+      <p style="margin:0;font-size:14px;line-height:1.65;color:var(--ink);">${escapeHtml(executiveSummaryText(f))}</p>
+    </div>
+    ${p ? `
+    <div class="chart-card" style="background:var(--surface);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;">
+        <h3 style="margin:0;">${escapeHtml(p.m.name)} ${f.project.isPI ? 'stage' : 'phase'}</h3>
+        <span style="font-size:11px;font-weight:700;color:var(--progress);background:var(--progress-bg);border-radius:999px;padding:4px 11px;">${stLabel}</span>
+      </div>
+      <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">${p.total ? p.done+' of '+plural(p.total,'task')+' completed' : 'No tasks linked yet'}</div>
+      <div style="width:100%;height:6px;border-radius:999px;background:var(--line);overflow:hidden;margin-bottom:18px;"><div style="width:${pct}%;height:100%;background:var(--progress);"></div></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;">
+        <div><div class="section-label" style="margin-top:0;">Risks</div>${list(f.risks,'No open risks')}</div>
+        <div><div class="section-label" style="margin-top:0;">Blockers</div>${list(f.blockers,'No open blockers')}</div>
+        <div><div class="section-label" style="margin-top:0;">Support needed</div>${f.actions.length ? f.actions.slice(0,3).map(a=>`<div style="font-size:13px;line-height:1.5;margin-bottom:4px;">${escapeHtml(a.title)}</div>`).join('') + (f.actions.length>3 ? `<div style="font-size:12px;color:var(--ink-faint);">+${f.actions.length-3} more</div>` : '') : `<div style="font-size:13px;color:var(--ink-faint);">No executive support needed</div>`}</div>
+      </div>
+    </div>` : ''}`;
+  }
+
   function renderProjectDetail(pid){
     const project = state.projects.find(p=>p.id===pid);
     if(!project) return `<div class="dash-wrap"><p style="color:var(--ink-faint);">Project not found.</p></div>`;
@@ -2126,6 +2228,7 @@
           </div>
         </div>
       </div>`}
+      ${executiveView ? renderExecutiveBrief(pid) : ''}
       ${executiveView ? '' : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:16px;">
         ${ms.map(m=>renderMilestoneCard(m)).join('')}
