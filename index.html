@@ -703,7 +703,7 @@
       if(risksRes.error || blockersRes.error || actionsRes.error){
         appError = (risksRes.error || blockersRes.error || actionsRes.error).message; render(); reloadInFlight = null; return;
       }
-      state.risks = (risksRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status }));
+      state.risks = (risksRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status, resolvedBy: profileName(r.resolved_by), resolvedAt:r.resolved_at, resolutionNote:r.resolution_note }));
       state.blockers = (blockersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status, resolvedBy: profileName(r.resolved_by), resolutionNote:r.resolution_note }));
       state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status, closedBy: profileName(r.closed_by), closureNote:r.closure_note }));
       const [membersRes, retrosRes] = await Promise.all([
@@ -1221,8 +1221,13 @@
     title=(title||'').trim(); if(!title) return;
     await runMutation(()=> sb.from('risks').insert({ project_id:projectId, title, severity: severity||'medium', created_by: currentUserId() }));
   }
-  async function resolveRisk(id){
-    await runMutation(()=> sb.from('risks').update({ status:'resolved', resolved_at:new Date().toISOString() }).eq('id', id));
+  async function mitigateRiskWithReason(id, reason){
+    const r = state.risks.find(x=>x.id===id); if(!r) return;
+    const { error } = await sb.from('risks').update({ status:'resolved', resolved_at:new Date().toISOString(), resolved_by: currentUserId(), resolution_note: reason }).eq('id', id);
+    if(error){ appError=error.message; render(); return; }
+    await sb.from('audit_log').insert({ risk_id:id, task_title:r.title, action:'mitigate_risk', reason, user_id: currentUserId() });
+    appError = null;
+    await reloadAllData();
   }
   async function createBlocker(projectId, title, severity){
     title=(title||'').trim(); if(!title) return;
@@ -2121,12 +2126,6 @@
       out.push(name+' is currently '+f.pct+'% complete ('+f.health.msComplete+' of '+f.health.msTotal+' milestones). Overall health is '+healthLabel(f.health.bucket)+'.');
       if(f.completedPhases.length===0) out.push('No milestone has been signed off yet.');
       else out.push((f.completedPhases.length===1 ? 'The '+f.completedPhases[0]+' phase has' : joinNames(f.completedPhases)+' have')+' been completed.');
-      if(f.phase){
-        const n = f.phase.m.name, st = f.phase.m.status;
-        if(st==='in_progress') out.push('The '+n+' phase is in progress'+(f.phase.total ? ', with '+f.phase.done+' of '+plural(f.phase.total,'task')+' completed.' : ', with no tasks linked yet.'));
-        else if(st==='awaiting_review') out.push('The '+n+' phase has finished all its tasks and is awaiting gate review.');
-        else out.push('The '+n+' phase has not started.');
-      }
     }
     const top = [];
     if(f.blockers.length) top.push(plural(f.blockers.length,'open blocker')+(f.blockers.length>1 ? ' (most serious: "'+f.blockers[0].title+'")' : ' ("'+f.blockers[0].title+'")'));
@@ -2145,29 +2144,20 @@
   function renderExecutiveBrief(pid){
     const f = executiveBriefFacts(pid);
     if(!f.project) return '';
-    const p = f.phase;
-    const stLabel = p ? ({in_progress:'In progress', awaiting_review:'Awaiting review', not_started:'Not started'}[p.m.status]||'') : '';
-    const pct = p && p.total ? Math.round(p.done/p.total*100) : 0;
     const list = (arr, empty) => arr.length ? arr.slice(0,3).map(x=>`<div style="font-size:13px;line-height:1.5;margin-bottom:4px;"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${severityColor(x.severity)};margin-right:7px;"></span>${escapeHtml(x.title)}</div>`).join('') + (arr.length>3 ? `<div style="font-size:12px;color:var(--ink-faint);">+${arr.length-3} more</div>` : '') : `<div style="font-size:13px;color:var(--ink-faint);">${empty}</div>`;
     return `
     <div class="chart-card" style="background:var(--surface);">
       <h3 style="margin-bottom:10px;">Executive summary</h3>
       <p style="margin:0;font-size:14px;line-height:1.65;color:var(--ink);">${escapeHtml(executiveSummaryText(f))}</p>
     </div>
-    ${p ? `
     <div class="chart-card" style="background:var(--surface);">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;">
-        <h3 style="margin:0;">${escapeHtml(p.m.name)} ${f.project.isPI ? 'stage' : 'phase'}</h3>
-        <span style="font-size:11px;font-weight:700;color:var(--progress);background:var(--progress-bg);border-radius:999px;padding:4px 11px;">${stLabel}</span>
-      </div>
-      <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">${p.total ? p.done+' of '+plural(p.total,'task')+' completed' : 'No tasks linked yet'}</div>
-      <div style="width:100%;height:6px;border-radius:999px;background:var(--line);overflow:hidden;margin-bottom:18px;"><div style="width:${pct}%;height:100%;background:var(--progress);"></div></div>
+      <h3 style="margin-bottom:14px;">Needs attention</h3>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;">
         <div><div class="section-label" style="margin-top:0;">Risks</div>${list(f.risks,'No open risks')}</div>
         <div><div class="section-label" style="margin-top:0;">Blockers</div>${list(f.blockers,'No open blockers')}</div>
-        <div><div class="section-label" style="margin-top:0;">Support needed</div>${f.actions.length ? f.actions.slice(0,3).map(a=>`<div style="font-size:13px;line-height:1.5;margin-bottom:4px;">${escapeHtml(a.title)}</div>`).join('') + (f.actions.length>3 ? `<div style="font-size:12px;color:var(--ink-faint);">+${f.actions.length-3} more</div>` : '') : `<div style="font-size:13px;color:var(--ink-faint);">No executive support needed</div>`}</div>
+        <div><div class="section-label" style="margin-top:0;">Executive actions</div>${f.actions.length ? f.actions.slice(0,3).map(a=>`<div style="font-size:13px;line-height:1.5;margin-bottom:4px;">${escapeHtml(a.title)}</div>`).join('') + (f.actions.length>3 ? `<div style="font-size:12px;color:var(--ink-faint);">+${f.actions.length-3} more</div>` : '') : `<div style="font-size:13px;color:var(--ink-faint);">No executive actions open</div>`}</div>
       </div>
-    </div>` : ''}`;
+    </div>`;
   }
 
   function renderProjectDetail(pid){
@@ -2256,13 +2246,16 @@
           <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;">
             <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(r.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(r.severity)}</span>
             <div style="flex:1;min-width:0;font-size:14px;font-weight:600;">${escapeHtml(r.title)}</div>
-            ${executiveView ? '' : `<button type="button" class="resolve-btn" data-resolve-risk="${r.id}">Resolve</button>`}
+            <button type="button" class="resolve-btn" data-action="mitigate_risk" data-taskid="${r.id}">Mitigate</button>
           </div>`).join('')}
           ${resolvedRisks.map(r=>`
-          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;opacity:.6;">
+          <div style="background:var(--surface-alt);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;opacity:.6;">
             <span style="font-size:10.5px;font-weight:700;color:#fff;background:${severityColor(r.severity)};border-radius:999px;padding:4px 10px;flex-shrink:0;">${severityLabel(r.severity)}</span>
-            <div style="flex:1;min-width:0;font-size:14px;font-weight:600;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(r.title)}</div>
-            <span style="font-size:11.5px;color:var(--ink-faint);">Resolved</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px;text-decoration:line-through;text-decoration-color:var(--ink-faint);">${escapeHtml(r.title)}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">Mitigated by ${escapeHtml(r.resolvedBy||'Unknown')}</div>
+              ${r.resolutionNote ? `<div class="log-caption" style="text-align:left;margin-top:4px;">${escapeHtml(r.resolutionNote)}</div>` : ''}
+            </div>
           </div>`).join('')}
         </div>`}
       </div>
@@ -2787,9 +2780,9 @@
     </div>`;
   }
 
-  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone', delete_milestone:'Delete milestone', resolve_blocker:'Resolve blocker', close_executive_action:'Close executive action', archive_project:'Archive project', request_expunge:'Request expunge', decline_expunge:'Decline expunge request'};
-  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject', delete_milestone:'Delete', resolve_blocker:'Resolve', close_executive_action:'Close', archive_project:'Archive', request_expunge:'Request', decline_expunge:'Decline'};
-  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting', delete_milestone:'deleting this milestone', resolve_blocker:'resolving this blocker — describe how it was resolved', close_executive_action:'closing this action — describe how it was resolved', archive_project:'archiving this project', request_expunge:'requesting permanent deletion — this goes to a Journey Architect for authorization', decline_expunge:'declining this expunge request'};
+  const ACTION_TITLES = {delete:'Delete task', reopen:'Reopen task', resume:'Resume task', suspend:'Suspend task', restore:'Restore task', milestone_approve:'Approve milestone', milestone_reject:'Reject milestone', delete_milestone:'Delete milestone', resolve_blocker:'Resolve blocker', mitigate_risk:'Mitigate risk', close_executive_action:'Close executive action', archive_project:'Archive project', request_expunge:'Request expunge', decline_expunge:'Decline expunge request'};
+  const ACTION_CTA = {delete:'Delete', reopen:'Reopen', resume:'Resume', suspend:'Suspend', restore:'Restore', milestone_approve:'Approve', milestone_reject:'Reject', delete_milestone:'Delete', resolve_blocker:'Resolve', mitigate_risk:'Mitigate', close_executive_action:'Close', archive_project:'Archive', request_expunge:'Request', decline_expunge:'Decline'};
+  const ACTION_VERB = {delete:'deleting', reopen:'reopening', resume:'resuming', suspend:'suspending', restore:'restoring', milestone_approve:'approving', milestone_reject:'rejecting', delete_milestone:'deleting this milestone', resolve_blocker:'resolving this blocker — describe how it was resolved', mitigate_risk:'mitigating this risk — describe how it was mitigated', close_executive_action:'closing this action — describe how it was resolved', archive_project:'archiving this project', request_expunge:'requesting permanent deletion — this goes to a Journey Architect for authorization', decline_expunge:'declining this expunge request'};
 
   function renderActionDialog(){
     const type = pendingAction.type;
@@ -2798,6 +2791,7 @@
     const t = type==='restore' ? state.trash.find(x=>x.id===pendingAction.taskId)
       : isMilestoneAction ? state.milestones.find(x=>x.id===pendingAction.taskId)
       : type==='resolve_blocker' ? state.blockers.find(x=>x.id===pendingAction.taskId)
+      : type==='mitigate_risk' ? state.risks.find(x=>x.id===pendingAction.taskId)
       : type==='close_executive_action' ? state.executiveActions.find(x=>x.id===pendingAction.taskId)
       : isProjectAction ? state.projects.find(x=>x.id===pendingAction.taskId)
       : getTask(pendingAction.taskId);
@@ -3029,6 +3023,7 @@
         if(type==='milestone_reject') rejectMilestone(taskId, reason);
         if(type==='delete_milestone') deleteMilestoneWithReason(taskId, reason);
         if(type==='resolve_blocker') resolveBlockerWithReason(taskId, reason);
+        if(type==='mitigate_risk') mitigateRiskWithReason(taskId, reason);
         if(type==='archive_project') archiveProjectWithReason(taskId, reason);
         if(type==='request_expunge') requestExpungeWithReason(taskId, reason);
         if(type==='decline_expunge') declineExpungeWithReason(taskId, reason);
@@ -3114,7 +3109,6 @@
         createRisk(newRiskTitle.dataset.newRiskTitle, newRiskTitle.value, sev ? sev.value : 'medium');
       }
     });
-    app.querySelectorAll('[data-resolve-risk]').forEach(b=>b.addEventListener('click', ()=>{ resolveRisk(b.dataset.resolveRisk); }));
 
     const newBlockerTitle = app.querySelector('[data-new-blocker-title]');
     if(newBlockerTitle) newBlockerTitle.addEventListener('keydown', e=>{
