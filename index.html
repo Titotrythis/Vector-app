@@ -160,6 +160,53 @@
   .cal-cell.today-cell{box-shadow:0 0 0 2px var(--ink) inset;}
   .cal-cell.selected-cell{outline:2px solid var(--progress);outline-offset:-2px;}
   .cal-cell.freeze-cell{background:#C7C7C2;color:var(--ink-soft);}
+  :root{--heat-0:#E6DFCF;--heat-1:#D3E8D5;--heat-2:#A6D3AD;--heat-3:#62A877;--heat-4:#25623F;}
+  .cal-cell.active.heat-1,.hm-cell.heat-1{background:var(--heat-1);color:#1F5C33;}
+  .cal-cell.active.heat-2,.hm-cell.heat-2{background:var(--heat-2);color:#17492A;}
+  .cal-cell.active.heat-3,.hm-cell.heat-3{background:var(--heat-3);color:#fff;}
+  .cal-cell.active.heat-4,.hm-cell.heat-4{background:var(--heat-4);color:#fff;}
+  .cal-cell .cal-n{position:absolute;right:6px;bottom:4px;font-size:10px;line-height:1;font-weight:700;opacity:.9;}
+  .cal-wrap.scrolly{overflow-y:auto;}
+  .cal-seg{display:flex;gap:2px;background:var(--bg-deep);padding:3px;border-radius:999px;}
+  .cal-seg button{border:none;background:transparent;padding:5px 11px;border-radius:999px;font-size:11.5px;font-weight:600;color:var(--ink-soft);font-family:inherit;}
+  .cal-seg button.active{background:var(--surface);color:var(--ink);}
+  .cal-header{flex-wrap:wrap;gap:8px;}
+  .hm-scroll{overflow-x:auto;flex-shrink:0;padding-bottom:4px;}
+  .hm-months,.hm-grid{display:grid;gap:3px;}
+  .hm-months{margin-bottom:3px;font-size:10px;color:var(--ink-faint);font-weight:600;}
+  .hm-months span{white-space:nowrap;overflow:visible;}
+  .hm-grid{grid-template-rows:repeat(7,auto);grid-auto-flow:column;}
+  .hm-cell{aspect-ratio:1/1;border:none;padding:0;border-radius:3px;background:var(--heat-0);display:block;width:100%;}
+  .hm-cell.pad{background:transparent;}
+  .hm-cell.future{opacity:.4;}
+  .hm-cell.today-cell{box-shadow:0 0 0 2px var(--ink) inset;}
+  .hm-cell.selected-cell{outline:2px solid var(--progress);outline-offset:1px;}
+  button.hm-cell{cursor:pointer;}
+  .heat-legend{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--ink-soft);}
+  .heat-legend i{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  .yr-pick{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .yr-pick .yr-chip{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;color:var(--ink-soft);font-family:inherit;}
+  .yr-pick .yr-chip.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .yr-pick button:disabled{opacity:.35;cursor:default;}
+  .yr-note{font-size:11.5px;color:var(--ink-faint);}
+  .yr-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0;}
+  .yr-stats div{background:var(--surface-alt);border-radius:10px;padding:8px 10px;}
+  .yr-stats strong{display:block;font-size:17px;font-family:'Fraunces',serif;font-weight:600;}
+  .yr-stats span{font-size:10.5px;color:var(--ink-faint);}
+  .yr-bars{display:flex;align-items:flex-end;gap:10px;height:96px;margin-top:6px;}
+  .yr-bars button{flex:1;max-width:90px;border:none;background:transparent;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:100%;font-family:inherit;}
+  .yr-bars .bar{width:100%;border-radius:6px 6px 2px 2px;background:var(--heat-2);}
+  .yr-bars button.active .bar{background:var(--heat-4);}
+  .yr-bars .v{font-size:11px;font-weight:700;}
+  .yr-bars .l{font-size:10.5px;color:var(--ink-faint);}
+  @media (max-width:640px){ .yr-stats{grid-template-columns:repeat(2,1fr);} }
+  .restore-link{all:unset;cursor:pointer;display:inline-block;margin-top:8px;font-size:12px;color:var(--ink-soft);text-decoration:underline;text-underline-offset:2px;}
+  .restore-link:hover{color:var(--ink);}
+  .restore-link:focus-visible{outline:2px solid var(--progress);outline-offset:2px;}
+  .trash-grid{overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
+  .trash-grid::-webkit-scrollbar{display:none;}
+  .dash-top{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:16px;}
+  .dash-top .dash-toggle{margin-bottom:0;}
   .cal-footer{flex-shrink:0;padding-top:8px;}
   .cal-legend-compact{display:flex;gap:14px;font-size:11px;color:var(--ink-soft);margin-bottom:6px;flex-wrap:wrap;}
   .cal-legend-compact span{display:flex;align-items:center;gap:5px;}
@@ -394,6 +441,9 @@
   let selectedDay = todayStr();
   let calMonth = new Date();
   let dashRange = "month";
+  let dashYear = new Date().getFullYear();
+  let calView = "month";
+  let calYearSel = new Date().getFullYear();
   let chartSelected = null;
   let trendSel = {};
   let openTaskId = null;
@@ -969,6 +1019,38 @@
   }
 
   /* ---------------- Streak math (personal, per logged-in user) ---------------- */
+  // A task belongs to an archived project when its milestone's project is archived.
+  function taskArchived(t){
+    if(!t || !t.milestoneId) return false;
+    const m = state.milestones.find(x=>x.id===t.milestoneId);
+    if(!m) return false;
+    const p = state.projects.find(x=>x.id===m.projectId);
+    return !!(p && p.archived);
+  }
+  // Completed tasks per day (YYYY-MM-DD -> count), in the active scope. The
+  // Calendar deliberately includes archived projects: it is the team's record.
+  function completionCounts(){
+    const map = new Map();
+    state.tasks.concat(state.trash).forEach(t=>{
+      if(!t.completedAt || !taskInScope(t)) return;
+      const d = new Date(t.completedAt);
+      if(isNaN(d)) return;
+      const ds = dateToStr(d);
+      map.set(ds, (map.get(ds)||0)+1);
+    });
+    return map;
+  }
+  function earliestDataYear(){
+    let y = new Date().getFullYear();
+    state.tasks.concat(state.trash).forEach(t=>{
+      [t.createdAt, t.completedAt, t.day].forEach(v=>{
+        if(!v) return;
+        const yy = new Date(v).getFullYear();
+        if(!isNaN(yy) && yy>=2000 && yy<y) y = yy;
+      });
+    });
+    return y;
+  }
   function activeDaysSet(){
     const set = new Set();
     state.tasks.concat(state.trash).forEach(t=>{
@@ -1411,7 +1493,30 @@
       container.style.maxHeight = total + 'px';
     });
   }
+  // Trash shows at most 4 rows of the grid, whatever the column count is.
+  function fitTrashGrid(){
+    const grid = document.querySelector('[data-trash-grid]');
+    const hint = document.querySelector('[data-trash-hint]');
+    if(!grid) return;
+    const ROWS = 4;
+    grid.style.maxHeight = 'none';
+    const items = Array.from(grid.children);
+    const cols = Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length);
+    const cap = ROWS*cols;
+    if(items.length <= cap){ if(hint) hint.style.display='none'; return; }
+    const gap = parseFloat(getComputedStyle(grid).rowGap) || 12;
+    let h = 0;
+    for(let r=0;r<ROWS;r++){
+      let rowH = 0;
+      for(let c=0;c<cols;c++){ const el = items[r*cols+c]; if(el) rowH = Math.max(rowH, el.getBoundingClientRect().height); }
+      h += rowH;
+    }
+    h += gap*(ROWS-1);
+    grid.style.maxHeight = h + 'px';
+    if(hint){ hint.style.display='block'; hint.textContent = 'Scroll to see '+(items.length-cap)+' more'; }
+  }
   function fitScrollLists(){
+    fitTrashGrid();
     fitScrollListGroup('.cards, .log-list', 6);
     fitScrollListGroup('.resp-list', 3);
     fitScrollListGroup('.log-grid', 8);
@@ -1546,7 +1651,7 @@
     return todayStr();
   }
   function tasksForDay(day){
-    return state.tasks.filter(t=>effectiveDay(t)===day && taskInScope(t));
+    return state.tasks.filter(t=>effectiveDay(t)===day && taskInScope(t) && !taskArchived(t));
   }
 
   function renderBoard(isPhone){
@@ -1649,51 +1754,173 @@
   }
 
   /* ---------------- Calendar ---------------- */
+  function heatLevel(n, max){
+    if(!n || n<1 || !max) return 0;
+    return Math.min(4, Math.max(1, Math.ceil((n/max)*4)));
+  }
+  function busiestInYear(counts, y){
+    let max = 0;
+    counts.forEach((n,ds)=>{ if(ds.slice(0,4)===String(y) && n>max) max = n; });
+    return max;
+  }
+  function dayAria(ds, n){
+    const label = strToDate(ds).toLocaleDateString('en-GB',{day:'numeric', month:'short', year:'numeric'});
+    return n>0 ? `${label}: ${n} ${n===1?'task':'tasks'} completed` : `${label}: no tasks completed`;
+  }
+  function renderHeatLegend(){
+    return `<span class="heat-legend" aria-hidden="true">Fewer ${[0,1,2,3,4].map(l=>`<i style="background:var(--heat-${l})"></i>`).join('')} More</span>`;
+  }
+  function renderCalSeg(){
+    const seg = [['month','This month'],['year','This year'],['years','Years']];
+    return `<div class="cal-seg" role="group" aria-label="Calendar view">${seg.map(([k,l])=>`<button type="button" data-cal-view="${k}" class="${calView===k?'active':''}" aria-pressed="${calView===k}">${l}</button>`).join('')}</div>`;
+  }
+  // GitHub-style year heatmap: columns are weeks (Sunday first), rows are weekdays.
+  function renderYearHeatmap(y, counts, max){
+    const first = new Date(y,0,1);
+    const startPad = first.getDay();
+    const daysInYear = (new Date(y,11,31) - first)/86400000 + 1;
+    const weeks = Math.ceil((startPad + daysInYear)/7);
+    const colsCss = `grid-template-columns:repeat(${weeks},minmax(11px,1fr));`;
+    let months = '';
+    for(let m=0;m<12;m++){
+      const col = Math.floor((startPad + Math.round((new Date(y,m,1)-first)/86400000))/7) + 1;
+      months += `<span style="grid-column:${col};grid-row:1;">${THROUGHPUT_MONTHS[m].slice(0,3)}</span>`;
+    }
+    let cells = '';
+    for(let i=0;i<startPad;i++) cells += `<div class="hm-cell pad"></div>`;
+    for(let d=0; d<daysInYear; d++){
+      const dt = new Date(y,0,1+d);
+      const ds = dateToStr(dt);
+      const n = counts.get(ds)||0;
+      const fut = isFuture(ds);
+      const cls = `hm-cell heat-${heatLevel(n,max)} ${fut?'future':''} ${ds===todayStr()?'today-cell':''} ${selectedSummaryDay===ds?'selected-cell':''}`;
+      const aria = escapeAttr(dayAria(ds, n));
+      if(n>0 && !fut) cells += `<button type="button" class="${cls}" data-day-click="${ds}" aria-label="${aria}" title="${aria}"></button>`;
+      else cells += `<div class="${cls}" role="img" aria-label="${aria}" title="${aria}"></div>`;
+    }
+    return `
+    <div class="hm-scroll">
+      <div style="min-width:${weeks*14}px;">
+        <div class="hm-months" style="${colsCss}">${months}</div>
+        <div class="hm-grid" style="${colsCss}">${cells}</div>
+      </div>
+    </div>`;
+  }
+  function yearStats(counts, y){
+    let total=0, active=0, best=0, bestDs='';
+    const perMonth = new Array(12).fill(0);
+    counts.forEach((n,ds)=>{
+      if(ds.slice(0,4)!==String(y)) return;
+      total += n; active++;
+      perMonth[parseInt(ds.slice(5,7),10)-1] += n;
+      if(n>best){ best=n; bestDs=ds; }
+    });
+    let bm = -1, bmv = 0;
+    perMonth.forEach((v,i)=>{ if(v>bmv){ bmv=v; bm=i; } });
+    return { total, active, best, bestDs, bestMonth: bm>=0 ? THROUGHPUT_MONTHS[bm].slice(0,3) : '—' };
+  }
+
   function renderCalendar(){
+    const counts = completionCounts();
+    const activeSet = activeDaysSet();
+    const curYear = new Date().getFullYear();
+    const dows = ['S','M','T','W','T','F','S'];
+    const streaks = `
+        <div class="streak-stats-compact">
+          <div><strong>${currentStreak()}</strong><span>current</span></div>
+          <div><strong>${longestStreak()}</strong><span>longest</span></div>
+          <div><strong>${activeSet.size}</strong><span>active days</span></div>
+        </div>`;
+
+    if(calView==='year' || calView==='years'){
+      const y = calView==='year' ? curYear : calYearSel;
+      const max = busiestInYear(counts, y);
+      const st = yearStats(counts, y);
+      const minYear = earliestDataYear();
+      const head = calView==='year' ? `
+        <div class="cal-header"><h2 class="serif">${y}</h2>${renderCalSeg()}</div>` : `
+        <div class="cal-header"><h2 class="serif">${y}</h2>${renderCalSeg()}</div>
+        <div class="yr-pick" style="margin-bottom:10px;">
+          <div class="cal-nav"><button type="button" data-cal-year-step="-1" aria-label="Previous year" ${y<=minYear?'disabled':''}>${ICONS.chevL}</button></div>
+          ${Array.from({length:curYear-minYear+1},(_,k)=>minYear+k).slice(-6).map(yy=>`<button type="button" class="yr-chip ${yy===y?'active':''}" data-cal-year="${yy}" aria-pressed="${yy===y}">${yy}</button>`).join('')}
+          <div class="cal-nav"><button type="button" data-cal-year-step="1" aria-label="Next year" ${y>=curYear?'disabled':''}>${ICONS.chevR}</button></div>
+          <span class="yr-note">${y<curYear ? 'Past year, view only' : 'Current year'}</span>
+        </div>`;
+      let compare = '';
+      if(calView==='years'){
+        const years = Array.from({length:curYear-minYear+1},(_,k)=>minYear+k).slice(-6);
+        const totals = years.map(yy=>yearStats(counts, yy).total);
+        const hi = Math.max(1, ...totals);
+        compare = `
+        <div style="margin-top:6px;">
+          <div class="section-label" style="margin:0 0 4px;">Tasks completed per year</div>
+          <div class="yr-bars">
+            ${years.map((yy,i)=>`<button type="button" data-cal-year="${yy}" class="${yy===y?'active':''}" aria-label="${yy}: ${totals[i]} ${totals[i]===1?'task':'tasks'} completed"><span class="v">${totals[i]}</span><span class="bar" style="height:${totals[i]?Math.max(4,Math.round(totals[i]/hi*60)):2}px;"></span><span class="l">${yy}</span></button>`).join('')}
+          </div>
+        </div>`;
+      }
+      const bestLabel = st.bestDs ? `${st.best} on ${strToDate(st.bestDs).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}` : '—';
+      return `
+      <div class="cal-wrap scrolly">
+        ${head}
+        ${renderYearHeatmap(y, counts, max)}
+        <div class="cal-footer">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+            ${renderHeatLegend()}
+            <span class="yr-note">Tap a shaded day for details</span>
+          </div>
+          <div class="yr-stats">
+            <div><strong>${st.total}</strong><span>Completed</span></div>
+            <div><strong>${st.active}</strong><span>Active days</span></div>
+            <div><strong>${bestLabel}</strong><span>Busiest day</span></div>
+            <div><strong>${st.bestMonth}</strong><span>Busiest month</span></div>
+          </div>
+          ${compare}
+        </div>
+      </div>`;
+    }
+
     const y = calMonth.getFullYear(), m = calMonth.getMonth();
     const first = new Date(y,m,1);
     const startPad = first.getDay();
     const daysInMonth = new Date(y,m+1,0).getDate();
     const monthLabel = calMonth.toLocaleDateString('en-US',{month:'long', year:'numeric'});
-    const activeSet = activeDaysSet();
+    const max = busiestInYear(counts, y);
     let cells = '';
     for(let i=0;i<startPad;i++) cells += `<div class="cal-cell pad"></div>`;
     for(let d=1; d<=daysInMonth; d++){
       const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-      const active = activeSet.has(ds);
+      const n = counts.get(ds)||0;
+      const active = n>0;
       const fut = isFuture(ds);
       const isToday = ds===todayStr();
       const sel = selectedSummaryDay===ds ? 'selected-cell' : '';
       const freeze = isSunday(ds) && !active && !fut;
       if(active && !fut){
-        cells += `<button class="cal-cell active ${isToday?'today-cell':''} ${sel}" data-day-click="${ds}">${d}</button>`;
+        const aria = escapeAttr(dayAria(ds, n));
+        cells += `<button type="button" class="cal-cell active heat-${heatLevel(n,max)} ${isToday?'today-cell':''} ${sel}" data-day-click="${ds}" aria-label="${aria}" title="${aria}"><span>${d}</span><span class="cal-n" aria-hidden="true">${n}</span></button>`;
       } else {
         cells += `<div class="cal-cell ${fut?'future':''} ${freeze?'freeze-cell':''} ${isToday?'today-cell':''}">${d}</div>`;
       }
     }
     const totalCells = startPad + daysInMonth;
     for(let i=0;i<(42-totalCells);i++) cells += `<div class="cal-cell pad"></div>`;
-    const dows = ['S','M','T','W','T','F','S'];
     return `
     <div class="cal-wrap">
       <div class="cal-header">
         <h2 class="serif">${monthLabel}</h2>
-        <div class="cal-nav"><button data-cal="-1">${ICONS.chevL}</button><button data-cal="1">${ICONS.chevR}</button></div>
+        ${renderCalSeg()}
+        <div class="cal-nav"><button type="button" data-cal="-1" aria-label="Previous month">${ICONS.chevL}</button><button type="button" data-cal="1" aria-label="Next month">${ICONS.chevR}</button></div>
       </div>
       <div class="cal-dow-row">${dows.map(d=>`<div class="cal-dow">${d}</div>`).join('')}</div>
       <div class="cal-grid-flex">${cells}</div>
       <div class="cal-footer">
         <div class="cal-legend-compact">
-          <span><span class="legend-swatch" style="background:var(--active-day-bg)"></span>Active</span>
-          <span><span class="legend-swatch" style="background:var(--surface-alt);border:1px solid var(--line)"></span>Inactive</span>
+          ${renderHeatLegend()}
           <span><span class="legend-swatch" style="background:#C7C7C2"></span>Sunday freeze</span>
-          <span>Tap an active day for details</span>
+          <span>Number = tasks completed · tap a day for details</span>
         </div>
-        <div class="streak-stats-compact">
-          <div><strong>${currentStreak()}</strong><span>current</span></div>
-          <div><strong>${longestStreak()}</strong><span>longest</span></div>
-          <div><strong>${activeSet.size}</strong><span>active days</span></div>
-        </div>
+        ${streaks}
       </div>
     </div>`;
   }
@@ -1729,7 +1956,7 @@
 
   function renderDaySummary(ds){
     const uid = currentUserId();
-    const tasks = state.tasks.filter(t => t.completedAt && dateToStr(new Date(t.completedAt))===ds && taskInScope(t));
+    const tasks = state.tasks.concat(state.trash).filter(t => t.completedAt && dateToStr(new Date(t.completedAt))===ds && taskInScope(t));
     const label = strToDate(ds).toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'});
     return `
     <div class="overlay center" data-close-summary>
@@ -1754,20 +1981,21 @@
 
   /* ---------------- Trash ---------------- */
   function renderTrash(){
-    const items = state.trash.filter(taskInScope).reverse();
+    const items = state.trash.filter(t=>taskInScope(t) && !taskArchived(t)).reverse();
     return `
     <div class="trash-wrap">
       <div class="section-label" style="margin-top:0;">Deleted tasks</div>
       ${items.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">Nothing in the trash.</p>` : `
-      <div class="trash-grid">
+      <div class="trash-grid" data-trash-grid>
         ${items.map(t=>`
         <div class="trash-item">
           <div class="title">${escapeHtml(t.title)}</div>
           <div class="meta">Deleted by ${escapeHtml(t.deletedBy)} — ${escapeHtml(t.deleteReason||'')}</div>
           <div class="meta">${t.deletedAt ? new Date(t.deletedAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''}</div>
-          <button class="resolve-btn" style="margin-top:10px;width:100%;" data-action="restore" data-taskid="${t.id}">Restore</button>
+          <button type="button" class="restore-link" data-action="restore" data-taskid="${t.id}">Restore</button>
         </div>`).join('')}
-      </div>`}
+      </div>
+      <div class="scroll-hint" data-trash-hint style="display:none;"></div>`}
     </div>`;
   }
 
@@ -2391,7 +2619,7 @@
   }
 
   function renderSuspendedLogCard(){
-    const items = state.tasks.filter(t=>t.status==='suspended' && taskInScope(t));
+    const items = state.tasks.filter(t=>t.status==='suspended' && taskInScope(t) && !taskArchived(t));
     return `
     <div class="chart-card">
       <h3>Suspended tasks</h3>
@@ -2418,9 +2646,10 @@
     const labels = isMonth ? [1,2,3,4,5].map(w=>'Wk '+w) : THROUGHPUT_MONTHS.map(m=>m.slice(0,3));
     const fulls = isMonth ? [1,2,3,4,5].map(w=>'Week '+w) : THROUGHPUT_MONTHS;
     const created = new Array(n).fill(0), done = new Array(n).fill(0);
+    const Y = isMonth ? now.getFullYear() : dashYear;
     const bucket = ts => {
       const d = new Date(ts);
-      if(isNaN(d) || d.getFullYear()!==now.getFullYear()) return -1;
+      if(isNaN(d) || d.getFullYear()!==Y) return -1;
       if(isMonth){ if(d.getMonth()!==now.getMonth()) return -1; return Math.min(5, Math.ceil(d.getDate()/7)) - 1; }
       return d.getMonth();
     };
@@ -2428,7 +2657,7 @@
       if(t.createdAt){ const b = bucket(t.createdAt); if(b>=0) created[b]++; }
       if(t.status==='done' && t.completedAt){ const b = bucket(t.completedAt); if(b>=0) done[b]++; }
     });
-    const cur = isMonth ? Math.min(5, Math.ceil(now.getDate()/7)) - 1 : now.getMonth();
+    const cur = isMonth ? Math.min(5, Math.ceil(now.getDate()/7)) - 1 : (Y===now.getFullYear() ? now.getMonth() : -1);
     return labels.map((label,i)=>({ label, full: fulls[i], created: created[i], done: done[i], current: i===cur }));
   }
   // change = (completed - created) / created. State comes from the raw counts,
@@ -2502,8 +2731,8 @@
   // Each point is the running total up to the end of that period, counted from the
   // beginning of time (dashboard: scope-limited; project page: that project only),
   // so the opening balance carried into the period is included.
-  function trendBuckets(tasks, mode){
-    const now = new Date(), Y = now.getFullYear(), M = now.getMonth();
+  function trendBuckets(tasks, mode, yearOverride){
+    const now = new Date(), Y = (mode==='year' && yearOverride) ? yearOverride : now.getFullYear(), M = now.getMonth();
     const SHORT = THROUGHPUT_MONTHS.map(m=>m.slice(0,3));
     const out = [];
     if(mode==='month'){
@@ -2547,8 +2776,8 @@
     const ticks=[]; for(let v=min; v<=max; v+=step) ticks.push(v);
     return { min, max, ticks };
   }
-  function renderTrendChart(key, mode, tasks){
-    const b = trendBuckets(tasks, mode);
+  function renderTrendChart(key, mode, tasks, yearOverride){
+    const b = trendBuckets(tasks, mode, yearOverride);
     const el = b.filter(x=>x.elapsed);
     const n = b.length;
     const title = mode==='month' ? 'Cumulative trend by week' : 'Cumulative trend by month';
@@ -2607,7 +2836,7 @@
       ${detail}
     </div>`;
   }
-  function renderDashTrend(){ return renderTrendChart('dash', dashRange, state.tasks.filter(taskInScope)); }
+  function renderDashTrend(){ return renderTrendChart('dash', dashRange, state.tasks.filter(taskInScope), dashYear); }
 
   function renderDashboard(){
     const now = new Date();
@@ -2615,26 +2844,32 @@
       if(!t.day) return false;
       const d = strToDate(t.day);
       if(dashRange==='month') return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
-      return d.getFullYear()===now.getFullYear();
+      return d.getFullYear()===dashYear;
     };
-    const rangeTasks = state.tasks.filter(t=>taskInScope(t) && inRange(t));
+    // Archived projects: finished work stays in the numbers, open/scheduled work leaves.
+    const rangeTasks = state.tasks.filter(t=>taskInScope(t) && inRange(t) && !(taskArchived(t) && t.status!=='done'));
     const completed = rangeTasks.filter(t=>t.status==='done').length;
     const total = rangeTasks.length;
     const rate = total ? Math.round((completed/total)*100) : 0;
 
-    const allTasksById = {}; state.tasks.concat(state.trash).forEach(t=>{ allTasksById[t.id]=t; });
-    const deletedEntries = state.auditLog.filter(e=>{
-      if(e.action!=='delete') return false;
-      if(scope==='all') return true;
-      const t = allTasksById[e.taskId];
-      return !!t && taskInScope(t);
-    }).slice().reverse();
+    const curYear = now.getFullYear();
+    const minYear = earliestDataYear();
+    const yearPicker = dashRange==='year' ? `
+      <div class="yr-pick">
+        <div class="cal-nav"><button type="button" data-dash-year="-1" aria-label="Previous year" ${dashYear<=minYear?'disabled':''}>${ICONS.chevL}</button></div>
+        <strong class="serif" style="font-size:16px;" aria-live="polite">${dashYear}</strong>
+        <div class="cal-nav"><button type="button" data-dash-year="1" aria-label="Next year" ${dashYear>=curYear?'disabled':''}>${ICONS.chevR}</button></div>
+        ${dashYear<curYear ? `<span class="yr-note">Past year, view only</span>` : ''}
+      </div>` : '';
 
     return `
     <div class="dash-wrap">
-      <div class="dash-toggle">
-        <button data-dash="month" class="${dashRange==='month'?'active':''}">This Month</button>
-        <button data-dash="year" class="${dashRange==='year'?'active':''}">This Year</button>
+      <div class="dash-top">
+        <div class="dash-toggle">
+          <button data-dash="month" class="${dashRange==='month'?'active':''}">This Month</button>
+          <button data-dash="year" class="${dashRange==='year'?'active':''}">${dashYear===curYear?'This Year':'Year'}</button>
+        </div>
+        ${yearPicker}
       </div>
       <div class="stat-grid">
         <div class="stat-card"><div class="num serif">${completed}</div><div class="lbl">Completed</div></div>
@@ -2648,19 +2883,6 @@
       </div>
       ${renderPerformanceCard()}
       ${renderSuspendedLogCard()}
-      <div class="chart-card">
-        <h3>Deleted tasks log</h3>
-        ${deletedEntries.length===0 ? `<p style="font-size:13px;color:var(--ink-faint);">No deletions recorded.</p>` : `
-        <div class="log-grid">
-          ${deletedEntries.map(e=>`
-            <div class="log-item">
-              <div class="log-item-title">${escapeHtml(e.taskTitle)}</div>
-              <div class="log-item-time">${new Date(e.timestamp).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>
-              <div class="log-caption">— ${escapeHtml(e.username)}: ${escapeHtml(e.reason)}</div>
-            </div>`).join('')}
-        </div>
-        ${deletedEntries.length > 8 ? `<div class="scroll-hint">Scroll to see ${deletedEntries.length - 8} more</div>` : ''}`}
-      </div>
       <div class="chart-card">
         <h3>Backup</h3>
         <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">Save a snapshot of the current shared board to a file.</p>
@@ -2925,7 +3147,28 @@
       calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth()+parseInt(b.dataset.cal,10), 1);
       selectedSummaryDay = null; render();
     }));
-    app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; chartSelected=null; delete trendSel.dash; render(); }));
+    app.querySelectorAll('[data-dash]').forEach(b=>b.addEventListener('click', ()=>{ dashRange=b.dataset.dash; if(dashRange==='month') dashYear=new Date().getFullYear(); chartSelected=null; delete trendSel.dash; render(); }));
+    app.querySelectorAll('[data-dash-year]').forEach(b=>b.addEventListener('click', ()=>{
+      const next = dashYear + (parseInt(b.dataset.dashYear,10)||0);
+      dashYear = Math.min(new Date().getFullYear(), Math.max(earliestDataYear(), next));
+      chartSelected=null; delete trendSel.dash; render();
+    }));
+    app.querySelectorAll('[data-cal-view]').forEach(b=>b.addEventListener('click', ()=>{
+      const v = b.dataset.calView;
+      if(v!=='month' && v!=='year' && v!=='years') return;
+      calView = v; selectedSummaryDay = null;
+      if(v==='years') calYearSel = new Date().getFullYear();
+      render();
+    }));
+    app.querySelectorAll('[data-cal-year-step]').forEach(b=>b.addEventListener('click', ()=>{
+      const next = calYearSel + (parseInt(b.dataset.calYearStep,10)||0);
+      calYearSel = Math.min(new Date().getFullYear(), Math.max(earliestDataYear(), next));
+      selectedSummaryDay = null; render();
+    }));
+    app.querySelectorAll('[data-cal-year]').forEach(b=>b.addEventListener('click', ()=>{
+      const y = parseInt(b.dataset.calYear,10);
+      if(!isNaN(y) && y>=earliestDataYear() && y<=new Date().getFullYear()){ calYearSel = y; selectedSummaryDay = null; render(); }
+    }));
     app.querySelectorAll('[data-chart-pick]').forEach(b=>b.addEventListener('click', ()=>{
       const i = parseInt(b.dataset.chartPick,10);
       chartSelected = chartSelected===i ? null : i;
