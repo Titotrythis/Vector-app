@@ -382,6 +382,33 @@
   .add-sub{display:flex;gap:6px;margin-top:8px;}
   .add-sub input{flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:14px;}
   .sub-progress{font-size:12px;color:var(--ink-faint);margin-top:2px;}
+  .att-count{font-weight:600;color:#B8B6AA;letter-spacing:0;text-transform:none;}
+  .att-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .att-tile{display:flex;align-items:flex-start;gap:10px;background:var(--surface-alt);border-radius:10px;padding:10px;min-width:0;}
+  .att-ico{flex:none;border-radius:6px;position:relative;overflow:hidden;display:flex;align-items:flex-end;justify-content:center;font-size:9.5px;font-weight:700;}
+  .att-ico.pdf{width:30px;height:36px;background:#B23B2E;color:#fff;padding-bottom:4px;border-radius:5px;}
+  .att-ico.img{width:36px;height:36px;background:#E6DFCF;}
+  .att-ico.img img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
+  .att-ico.img span{position:absolute;right:2px;bottom:2px;background:rgba(35,37,43,.72);color:#fff;font-size:8px;border-radius:3px;padding:1px 3px;}
+  .att-body{flex:1;min-width:0;}
+  .att-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .att-meta{font-size:11px;color:var(--ink-faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .att-actions{display:flex;gap:12px;margin-top:6px;align-items:center;}
+  .att-confirm{font-size:12px;color:var(--ink-soft);display:flex;gap:10px;align-items:center;}
+  .att-link{all:unset;cursor:pointer;font-size:12px;color:var(--ink-soft);text-decoration:underline;text-underline-offset:2px;}
+  .att-link.danger{color:var(--danger);}
+  .att-link:focus-visible{outline:2px solid var(--progress);outline-offset:2px;}
+  .att-add{width:100%;box-sizing:border-box;margin-top:10px;border:1.5px dashed var(--line-strong);background:transparent;border-radius:10px;padding:12px;font-size:13px;font-weight:600;color:var(--ink);cursor:pointer;font-family:inherit;}
+  .att-add:disabled{color:#B8B6AA;cursor:default;}
+  .att-grid + .att-add, .att-busy + .att-add, .att-err + .att-add{margin-top:10px;}
+  [data-att-drop].over .att-add{border-color:var(--progress);background:var(--progress-bg);}
+  .att-hint{font-size:11.5px;color:var(--ink-faint);margin-top:6px;}
+  .att-note{font-size:12px;color:var(--ink-soft);background:var(--bg-deep);border-radius:8px;padding:8px 10px;line-height:1.45;margin-top:8px;}
+  .att-err{font-size:12.5px;color:var(--danger);background:#FBEDE9;border-radius:10px;padding:10px 12px;margin-top:8px;line-height:1.45;}
+  .att-busy{background:var(--surface-alt);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;font-weight:600;}
+  .att-bar{height:6px;border-radius:999px;background:var(--line);margin-top:8px;overflow:hidden;position:relative;}
+  .att-bar i{position:absolute;top:0;bottom:0;width:40%;background:var(--progress);border-radius:999px;animation:attslide 1.1s ease-in-out infinite;}
+  @keyframes attslide{0%{left:-40%;}100%{left:100%;}}
   .delete-task{margin-top:24px;width:100%;border:1px solid var(--line);background:none;color:var(--danger);padding:9px;border-radius:9px;font-size:13px;font-weight:600;}
 
   .day-summary{background:var(--surface);width:88%;max-width:300px;border-radius:16px;padding:16px 18px;max-height:70vh;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
@@ -452,7 +479,7 @@
   const POMODORO_SEC = 25*60;
   const PRIORITIES = ['urgent','veryhigh','high','low'];
 
-  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [], units: [], taskShares: [] };
+  let state = { tasks: [], trash: [], auditLog: [], profiles: [], projects: [], milestones: [], risks: [], blockers: [], executiveActions: [], projectMembers: [], retrospectives: [], units: [], taskShares: [], attachments: [] };
   let retroWeekStart = null;
   let expandedMilestoneId = null;
   let newProjectIsPI = false;
@@ -753,7 +780,7 @@
   // Data loading: one parallel wave per refresh, and only the tables that changed.
   // Scopes: profiles, tasks, audit, projects, milestones, units, risks, blockers,
   //         actions, members, retros, shares
-  const ALL_SCOPES = ['profiles','tasks','audit','projects','milestones','units','risks','blockers','actions','members','retros','shares'];
+  const ALL_SCOPES = ['profiles','tasks','audit','projects','milestones','units','risks','blockers','actions','members','retros','shares','attach'];
   const LOADERS = {
     profiles:   { q:()=>sb.from('profiles').select('*'),
                   apply:d=>{ state.profiles = d || []; } },
@@ -779,6 +806,10 @@
                   apply:d=>{ state.projectMembers = (d || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, name: profileName(r.user_id) })); } },
     retros:     { q:()=>sb.from('retrospectives').select('*'),
                   apply:d=>{ state.retrospectives = (d || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, weekStart:r.week_start, wentWell:r.went_well, notWell:r.not_well, learned:r.learned, nextPriority:r.next_priority })); } },
+    // attachments are optional until the attachments SQL has been run: the section stays hidden if the table is missing
+    attach:     { tolerant:true,
+                  q:()=>sb.from('task_attachments').select('*').order('created_at', {ascending:true}),
+                  apply:d=>{ state.attachments = (d || []).map(attFromRow); } },
     // shares are optional: a failure here leaves an empty list rather than blocking the app
     shares:     { tolerant:true,
                   q:()=>sb.from('task_shares').select('*'),
@@ -794,7 +825,8 @@
     const order = list.includes('profiles') ? ['profiles', ...list.filter(k=>k!=='profiles')] : list;
     order.forEach(k=>{
       const r = results[list.indexOf(k)];
-      if(r.error && LOADERS[k].tolerant) state.taskShares = [];
+      if(k==='attach') attachmentsReady = !r.error;
+      if(r.error && LOADERS[k].tolerant){ if(k==='shares') state.taskShares = []; if(k==='attach') state.attachments = []; }
       else LOADERS[k].apply(r.data);
     });
     if(scopes.has('tasks') || scopes.has('milestones')) await reconcileMilestones();
@@ -834,7 +866,7 @@
   }
   const RT_TABLES = {
     tasks:['tasks'], subtasks:['tasks'], audit_log:['audit'], profiles:ALL_SCOPES,
-    projects:['projects'], milestones:['milestones'], units:['units'], task_shares:['shares'],
+    projects:['projects'], milestones:['milestones'], units:['units'], task_shares:['shares'], task_attachments:['attach'],
     risks:['risks'], blockers:['blockers'], executive_actions:['actions'], project_members:['members'], retrospectives:['retros'],
   };
   function setupRealtime(){
@@ -1113,6 +1145,183 @@
   }
   async function unshareTask(shareId){
     await runMutation(()=> sb.from('task_shares').delete().eq('id', shareId), ['shares']);
+  }
+
+  /* ---------------- Attachments (PDF, PNG, JPEG on task cards) ---------------- */
+  const ATT_BUCKET = 'task-attachments';
+  const ATT_MAX_BYTES = 10 * 1024 * 1024;
+  const ATT_MAX_COUNT = 10;
+  const ATT_TYPES = { 'application/pdf':{ext:'pdf', label:'PDF'}, 'image/png':{ext:'png', label:'PNG'}, 'image/jpeg':{ext:'jpg', label:'JPG'} };
+  let attachmentsReady = false;   // false until the table exists (SQL run), so the section stays hidden
+  let attBusy = {};               // task id -> uploads in progress
+  let attMessages = {};           // task id -> messages shown under the list
+  let attConfirmId = null;        // attachment waiting for "Remove? Yes / No"
+  const attThumbs = {};           // attachment id -> { url, exp } short-lived preview links
+  let attThumbLoading = false;
+
+  function attFromRow(r){
+    return { id:r.id, taskId:r.task_id, path:r.path, fileName:r.file_name, mimeType:r.mime_type, sizeBytes:Number(r.size_bytes)||0, uploadedBy:r.uploaded_by, createdAt:r.created_at };
+  }
+  function attachmentsForTask(taskId){ return state.attachments.filter(a=>a.taskId===taskId); }
+  function canEditAttachments(t){
+    if(!t || taskArchived(t)) return false;
+    const uid = currentUserId();
+    return t.createdByUserId===uid || state.taskShares.some(s=>s.taskId===t.id && s.userId===uid) || canReviewMilestones();
+  }
+  function canRemoveAttachment(t, a){
+    return canEditAttachments(t) || (!!t && !taskArchived(t) && a.uploadedBy===currentUserId());
+  }
+  function fmtBytes(n){
+    if(n < 1024) return n+' B';
+    if(n < 1024*1024) return Math.max(1, Math.round(n/1024))+' KB';
+    return (n/1024/1024).toFixed(1)+' MB';
+  }
+  // Drop path separators, control characters and bidi-override characters from a file name.
+  function cleanFileName(name){
+    const c = String(name||'').replace(/[\u0000-\u001f\u007f\\/‪-‮⁦-⁩]/g,'').trim().slice(0,200);
+    return c || 'file';
+  }
+  // Check the file's real content (not just its name or the type the browser reports).
+  async function sniffFileType(file){
+    const b = new Uint8Array(await file.slice(0,8).arrayBuffer());
+    if(b[0]===0x25 && b[1]===0x50 && b[2]===0x44 && b[3]===0x46 && b[4]===0x2D) return 'application/pdf';
+    if(b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47 && b[4]===0x0D && b[5]===0x0A && b[6]===0x1A && b[7]===0x0A) return 'image/png';
+    if(b[0]===0xFF && b[1]===0xD8 && b[2]===0xFF) return 'image/jpeg';
+    return null;
+  }
+  function newFileId(){
+    if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    const a = new Uint8Array(16); crypto.getRandomValues(a);
+    return Array.from(a, x=>x.toString(16).padStart(2,'0')).join('');
+  }
+  async function uploadAttachments(taskId, fileList){
+    const t = getTask(taskId);
+    if(!t || !canEditAttachments(t)) return;
+    const files = Array.from(fileList || []);
+    if(files.length===0) return;
+    const msgs = [];
+    const room = ATT_MAX_COUNT - attachmentsForTask(taskId).length - (attBusy[taskId]||0);
+    const good = [];
+    for(const f of files){
+      const shown = cleanFileName(f.name);
+      if(f.size===0){ msgs.push(`${shown} is empty and was not added.`); continue; }
+      if(f.size > ATT_MAX_BYTES){ msgs.push(`${shown} is ${fmtBytes(f.size)}. The limit is 10 MB per file.`); continue; }
+      const mime = await sniffFileType(f);
+      if(!mime || !/\.(pdf|png|jpe?g)$/i.test(f.name)){ msgs.push(`${shown} was not added. Only PDF, PNG and JPEG files are accepted.`); continue; }
+      if(good.length >= room){ msgs.push(`${shown} was not added. A card can hold ${ATT_MAX_COUNT} files.`); continue; }
+      good.push({ file:f, mime });
+    }
+    attMessages[taskId] = msgs;
+    if(good.length===0){ render(); return; }
+    attBusy[taskId] = (attBusy[taskId]||0) + good.length;
+    render();
+    for(const g of good){
+      const path = `${taskId}/${newFileId()}.${ATT_TYPES[g.mime].ext}`;
+      try{
+        const up = await sb.storage.from(ATT_BUCKET).upload(path, g.file, { contentType:g.mime, upsert:false, cacheControl:'3600' });
+        if(up.error) throw up.error;
+        const ins = await sb.from('task_attachments').insert({ task_id:taskId, path, file_name:cleanFileName(g.file.name), mime_type:g.mime, size_bytes:g.file.size }).select('*').single();
+        if(ins.error){ await sb.storage.from(ATT_BUCKET).remove([path]); throw ins.error; }
+        if(!state.attachments.some(a=>a.id===ins.data.id)) state.attachments.push(attFromRow(ins.data));
+      }catch(e){
+        (attMessages[taskId] = attMessages[taskId] || []).push(`${cleanFileName(g.file.name)} could not be uploaded${e && e.message ? ': '+e.message : '.'}`);
+      }
+      attBusy[taskId] = Math.max(0, (attBusy[taskId]||1) - 1);
+      render();
+    }
+  }
+  async function openAttachment(id){
+    const a = state.attachments.find(x=>x.id===id);
+    if(!a) return;
+    const w = window.open('about:blank', '_blank');   // opened first so pop-up blockers allow it
+    const { data, error } = await sb.storage.from(ATT_BUCKET).createSignedUrl(a.path, 60);
+    if(error || !data || !data.signedUrl){
+      if(w) w.close();
+      attMessages[a.taskId] = [`${cleanFileName(a.fileName)} could not be opened right now.`];
+      render(); return;
+    }
+    if(w){ w.opener = null; w.location.href = data.signedUrl; }
+    else window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  }
+  async function removeAttachment(id){
+    const a = state.attachments.find(x=>x.id===id);
+    attConfirmId = null;
+    if(!a){ render(); return; }
+    const r1 = await sb.storage.from(ATT_BUCKET).remove([a.path]);
+    if(r1.error){ attMessages[a.taskId] = [`${cleanFileName(a.fileName)} could not be removed: ${r1.error.message}`]; render(); return; }
+    const r2 = await sb.from('task_attachments').delete().eq('id', id);
+    if(r2.error){ attMessages[a.taskId] = [`${cleanFileName(a.fileName)} could not be removed: ${r2.error.message}`]; render(); return; }
+    state.attachments = state.attachments.filter(x=>x.id!==id);
+    delete attThumbs[id];
+    render();
+  }
+  // Previews for image attachments use short-lived private links, fetched once per hour.
+  async function ensureAttachmentThumbs(){
+    if(!openTaskId || attThumbLoading) return;
+    const imgs = attachmentsForTask(openTaskId).filter(a=>a.mimeType!=='application/pdf');
+    const now = Date.now();
+    const need = imgs.filter(a=>!attThumbs[a.id] || attThumbs[a.id].exp < now + 60000);
+    if(need.length){
+      attThumbLoading = true;
+      try{
+        const { data } = await sb.storage.from(ATT_BUCKET).createSignedUrls(need.map(a=>a.path), 3600);
+        (data||[]).forEach(d=>{
+          const a = need.find(x=>x.path===d.path);
+          if(a && d.signedUrl) attThumbs[a.id] = { url:d.signedUrl, exp: now + 3600*1000 };
+        });
+      }catch(e){ /* previews are optional */ }
+      attThumbLoading = false;
+    }
+    imgs.forEach(a=>{
+      const el = document.querySelector(`[data-att-thumb="${a.id}"]`);
+      const th = attThumbs[a.id];
+      if(el && th && el.getAttribute('src') !== th.url) el.setAttribute('src', th.url);
+    });
+  }
+  function renderAttTile(t, a){
+    const isImg = a.mimeType !== 'application/pdf';
+    const th = attThumbs[a.id];
+    const icon = isImg
+      ? `<div class="att-ico img"><img alt="" data-att-thumb="${escapeAttr(a.id)}" ${th && th.exp>Date.now() ? `src="${escapeAttr(th.url)}"` : ''}><span>${ATT_TYPES[a.mimeType] ? ATT_TYPES[a.mimeType].label : 'IMG'}</span></div>`
+      : `<div class="att-ico pdf" aria-hidden="true">PDF</div>`;
+    const who = profileName(a.uploadedBy) || 'Unknown';
+    const date = a.createdAt ? new Date(a.createdAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'}) : '';
+    const name = escapeHtml(cleanFileName(a.fileName));
+    const canRm = canRemoveAttachment(t, a);
+    const actions = attConfirmId===a.id
+      ? `<span class="att-confirm">Remove? <button type="button" class="att-link danger" data-att-remove-yes="${escapeAttr(a.id)}">Yes</button><button type="button" class="att-link" data-att-remove-no>No</button></span>`
+      : `<button type="button" class="att-link" data-att-open="${escapeAttr(a.id)}">Open</button>${canRm ? `<button type="button" class="att-link danger" data-att-remove="${escapeAttr(a.id)}" aria-label="Remove ${name}">Remove</button>` : ''}`;
+    return `
+    <div class="att-tile">
+      ${icon}
+      <div class="att-body">
+        <div class="att-name" title="${name}">${name}</div>
+        <div class="att-meta" title="${escapeAttr(date)}">${escapeHtml(who)} &middot; ${fmtBytes(a.sizeBytes)}${date ? ' &middot; '+escapeHtml(date) : ''}</div>
+        <div class="att-actions">${actions}</div>
+      </div>
+    </div>`;
+  }
+  function renderAttachments(t){
+    if(!attachmentsReady) return '';
+    const list = attachmentsForTask(t.id);
+    const busy = attBusy[t.id] || 0;
+    const msgs = attMessages[t.id] || [];
+    const canEdit = canEditAttachments(t);
+    const used = list.length;
+    return `
+        <div class="section-label">Attachments${used ? ` <span class="att-count">&middot; ${used}</span>` : ''}</div>
+        ${used ? `<div class="att-grid">${list.map(a=>renderAttTile(t,a)).join('')}</div>` : ''}
+        ${Array.from({length:busy}).map(()=>`<div class="att-busy"><span>Uploading&hellip;</span><div class="att-bar"><i></i></div></div>`).join('')}
+        ${msgs.map(m=>`<div class="att-err" role="alert">${escapeHtml(m)}</div>`).join('')}
+        ${canEdit ? (used+busy >= ATT_MAX_COUNT
+          ? `<button type="button" class="att-add" disabled>Limit reached (${ATT_MAX_COUNT} of ${ATT_MAX_COUNT})</button><div class="att-hint">Remove a file to add another.</div>`
+          : `<div data-att-drop="${t.id}">
+               <button type="button" class="att-add" data-att-pick="${t.id}">+ Add file</button>
+               <input type="file" hidden multiple accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg" data-att-input="${t.id}">
+               <div class="att-hint">Drag files here or choose files &middot; PDF, PNG or JPEG &middot; up to 10 MB each &middot; ${used} of ${ATT_MAX_COUNT} used</div>
+             </div>`)
+          : `${used===0 ? `<div class="att-hint" style="margin-top:0;">No attachments.</div>` : ''}<div class="att-note">${taskArchived(t) ? 'This project is archived, so attachments can be opened but not added or removed.' : 'Only the card&rsquo;s creator, people it is shared with, or a Journey Architect can add or remove files.'}</div>`}
+  `;
   }
 
   /* ---------------- Streak math (personal, per logged-in user) ---------------- */
@@ -1523,6 +1732,7 @@
       ${renderAvatarModal()}
     `;
     bindEvents();
+    if(!openTaskId){ attConfirmId = null; attMessages = {}; } else ensureAttachmentThumbs();
     if(view==='calendar') fitCalendarHeight();
     fitScrollLists();
     ensureTicking();
@@ -3112,6 +3322,7 @@
 
         <div class="section-label">Notes</div>
         <textarea class="notes" placeholder="What needs to happen today…" data-notes="${t.id}">${escapeHtml(t.notes)}</textarea>
+        ${renderAttachments(t)}
 
         <button class="delete-task" data-action="delete" data-taskid="${t.id}">Delete task</button>
       </div>
@@ -3535,6 +3746,22 @@
     const sharePicker = app.querySelector('[data-share-picker]');
     if(sharePicker) sharePicker.addEventListener('change', ()=>{ shareTask(sharePicker.dataset.sharePicker, sharePicker.value); });
     app.querySelectorAll('[data-unshare]').forEach(b=>b.addEventListener('click', ()=>{ unshareTask(b.dataset.unshare); }));
+    app.querySelectorAll('[data-att-pick]').forEach(b=>b.addEventListener('click', ()=>{
+      const inp = app.querySelector(`[data-att-input="${b.dataset.attPick}"]`); if(inp) inp.click();
+    }));
+    app.querySelectorAll('[data-att-input]').forEach(inp=>inp.addEventListener('change', ()=>{
+      const files = Array.from(inp.files||[]); inp.value='';
+      uploadAttachments(inp.dataset.attInput, files);
+    }));
+    app.querySelectorAll('[data-att-drop]').forEach(z=>{
+      z.addEventListener('dragover', e=>{ e.preventDefault(); z.classList.add('over'); });
+      z.addEventListener('dragleave', ()=>z.classList.remove('over'));
+      z.addEventListener('drop', e=>{ e.preventDefault(); z.classList.remove('over'); uploadAttachments(z.dataset.attDrop, e.dataTransfer ? e.dataTransfer.files : []); });
+    });
+    app.querySelectorAll('[data-att-open]').forEach(b=>b.addEventListener('click', ()=>openAttachment(b.dataset.attOpen)));
+    app.querySelectorAll('[data-att-remove]').forEach(b=>b.addEventListener('click', ()=>{ attConfirmId = b.dataset.attRemove; render(); }));
+    app.querySelectorAll('[data-att-remove-yes]').forEach(b=>b.addEventListener('click', ()=>removeAttachment(b.dataset.attRemoveYes)));
+    app.querySelectorAll('[data-att-remove-no]').forEach(b=>b.addEventListener('click', ()=>{ attConfirmId = null; render(); }));
     const taskMilestonePicker = app.querySelector('[data-task-milestone-picker]');
     if(taskMilestonePicker) taskMilestonePicker.addEventListener('change', ()=>{
       setTaskMilestone(taskMilestonePicker.dataset.taskMilestonePicker, taskMilestonePicker.value || null);
