@@ -750,91 +750,112 @@
     return { id: row.id, taskId: row.task_id, taskTitle: row.task_title, action: row.action, reason: row.reason, userId: row.user_id, username: profileName(row.user_id), timestamp: row.created_at };
   }
 
-  let reloadInFlight = null;
-  async function reloadAllData(){
-    if(reloadInFlight) return reloadInFlight;
-    reloadInFlight = (async ()=>{
-      const [profilesRes, tasksRes, auditRes, projectsRes, milestonesRes, unitsRes] = await Promise.all([
-        sb.from('profiles').select('*'),
-        sb.from('tasks').select('*, subtasks(*)').order('created_at', {ascending:true}),
-        sb.from('audit_log').select('*').order('created_at', {ascending:true}),
-        sb.from('projects').select('*').order('created_at', {ascending:true}),
-        sb.from('milestones').select('*').order('position', {ascending:true}),
-        sb.from('units').select('*').order('created_at', {ascending:true}),
-      ]);
-      const err = profilesRes.error || tasksRes.error || auditRes.error || projectsRes.error || milestonesRes.error || unitsRes.error;
-      if(err){ appError = err.message; render(); reloadInFlight = null; return; }
-      state.profiles = profilesRes.data || [];
-      const taskRows = tasksRes.data || [];
-      state.tasks = taskRows.filter(r=>!r.deleted).map(taskFromRow);
-      state.trash = taskRows.filter(r=>r.deleted).map(taskFromRow);
-      state.auditLog = (auditRes.data || []).map(auditFromRow);
-      state.units = (unitsRes.data || []).map(r=>({ id:r.id, name:r.name, code:r.code, createdBy:r.created_by }));
-      state.projects = (projectsRes.data || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date, isPI: !!r.is_pi, unitId: r.unit_id,
-        archived: !!r.archived, archivedBy: profileName(r.archived_by), archiveReason: r.archive_reason,
-        expungeRequested: !!r.expunge_requested, expungeRequestedBy: profileName(r.expunge_requested_by), expungeReason: r.expunge_reason, expungeDeclineReason: r.expunge_decline_reason }));
-      state.milestones = (milestonesRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, name:r.name, position:r.position, status:r.status }));
-      const [risksRes, blockersRes, actionsRes] = await Promise.all([
-        sb.from('risks').select('*').order('created_at', {ascending:true}),
-        sb.from('blockers').select('*').order('created_at', {ascending:true}),
-        sb.from('executive_actions').select('*').order('created_at', {ascending:true}),
-      ]);
-      if(risksRes.error || blockersRes.error || actionsRes.error){
-        appError = (risksRes.error || blockersRes.error || actionsRes.error).message; render(); reloadInFlight = null; return;
-      }
-      state.risks = (risksRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status, resolvedBy: profileName(r.resolved_by), resolvedAt:r.resolved_at, resolutionNote:r.resolution_note }));
-      state.blockers = (blockersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status, resolvedBy: profileName(r.resolved_by), resolutionNote:r.resolution_note }));
-      state.executiveActions = (actionsRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status, closedBy: profileName(r.closed_by), closureNote:r.closure_note }));
-      const [membersRes, retrosRes] = await Promise.all([
-        sb.from('project_members').select('*'),
-        sb.from('retrospectives').select('*'),
-      ]);
-      if(membersRes.error || retrosRes.error){
-        appError = (membersRes.error || retrosRes.error).message; render(); reloadInFlight = null; return;
-      }
-      state.projectMembers = (membersRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, name: profileName(r.user_id) }));
-      state.retrospectives = (retrosRes.data || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, weekStart:r.week_start, wentWell:r.went_well, notWell:r.not_well, learned:r.learned, nextPriority:r.next_priority }));
-      const sharesRes = await sb.from('task_shares').select('*');
-      state.taskShares = sharesRes.error ? [] : (sharesRes.data || []).map(r=>({ id:r.id, taskId:r.task_id, userId:r.user_id, name: profileName(r.user_id) }));
-      await reconcileMilestones();
-      render();
-      reloadInFlight = null;
-    })();
-    return reloadInFlight;
+  // Data loading: one parallel wave per refresh, and only the tables that changed.
+  // Scopes: profiles, tasks, audit, projects, milestones, units, risks, blockers,
+  //         actions, members, retros, shares
+  const ALL_SCOPES = ['profiles','tasks','audit','projects','milestones','units','risks','blockers','actions','members','retros','shares'];
+  const LOADERS = {
+    profiles:   { q:()=>sb.from('profiles').select('*'),
+                  apply:d=>{ state.profiles = d || []; } },
+    tasks:      { q:()=>sb.from('tasks').select('*, subtasks(*)').order('created_at', {ascending:true}),
+                  apply:d=>{ const rows = d || []; state.tasks = rows.filter(r=>!r.deleted).map(taskFromRow); state.trash = rows.filter(r=>r.deleted).map(taskFromRow); } },
+    audit:      { q:()=>sb.from('audit_log').select('*').order('created_at', {ascending:true}),
+                  apply:d=>{ state.auditLog = (d || []).map(auditFromRow); } },
+    projects:   { q:()=>sb.from('projects').select('*').order('created_at', {ascending:true}),
+                  apply:d=>{ state.projects = (d || []).map(r=>({ id:r.id, name:r.name, description:r.description||'', createdBy:r.created_by, createdAt:r.created_at, forecastCompletionDate:r.forecast_completion_date, isPI: !!r.is_pi, unitId: r.unit_id,
+                    archived: !!r.archived, archivedBy: profileName(r.archived_by), archiveReason: r.archive_reason,
+                    expungeRequested: !!r.expunge_requested, expungeRequestedBy: profileName(r.expunge_requested_by), expungeReason: r.expunge_reason, expungeDeclineReason: r.expunge_decline_reason })); } },
+    milestones: { q:()=>sb.from('milestones').select('*').order('position', {ascending:true}),
+                  apply:d=>{ state.milestones = (d || []).map(r=>({ id:r.id, projectId:r.project_id, name:r.name, position:r.position, status:r.status })); } },
+    units:      { q:()=>sb.from('units').select('*').order('created_at', {ascending:true}),
+                  apply:d=>{ state.units = (d || []).map(r=>({ id:r.id, name:r.name, code:r.code, createdBy:r.created_by })); } },
+    risks:      { q:()=>sb.from('risks').select('*').order('created_at', {ascending:true}),
+                  apply:d=>{ state.risks = (d || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, status:r.status, resolvedBy: profileName(r.resolved_by), resolvedAt:r.resolved_at, resolutionNote:r.resolution_note })); } },
+    blockers:   { q:()=>sb.from('blockers').select('*').order('created_at', {ascending:true}),
+                  apply:d=>{ state.blockers = (d || []).map(r=>({ id:r.id, projectId:r.project_id, title:r.title, severity:r.severity, owner:r.owner||'', raisedDate:r.raised_date, targetResolutionDate:r.target_resolution_date, needsExecutiveSupport:r.needs_executive_support, status:r.status, resolvedBy: profileName(r.resolved_by), resolutionNote:r.resolution_note })); } },
+    actions:    { q:()=>sb.from('executive_actions').select('*').order('created_at', {ascending:true}),
+                  apply:d=>{ state.executiveActions = (d || []).map(r=>({ id:r.id, projectId:r.project_id, milestoneId:r.milestone_id, title:r.title, owner:r.owner||'', dueDate:r.due_date, priority:r.priority, status:r.status, closedBy: profileName(r.closed_by), closureNote:r.closure_note })); } },
+    members:    { q:()=>sb.from('project_members').select('*'),
+                  apply:d=>{ state.projectMembers = (d || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, name: profileName(r.user_id) })); } },
+    retros:     { q:()=>sb.from('retrospectives').select('*'),
+                  apply:d=>{ state.retrospectives = (d || []).map(r=>({ id:r.id, projectId:r.project_id, userId:r.user_id, weekStart:r.week_start, wentWell:r.went_well, notWell:r.not_well, learned:r.learned, nextPriority:r.next_priority })); } },
+    // shares are optional: a failure here leaves an empty list rather than blocking the app
+    shares:     { tolerant:true,
+                  q:()=>sb.from('task_shares').select('*'),
+                  apply:d=>{ state.taskShares = (d || []).map(r=>({ id:r.id, taskId:r.task_id, userId:r.user_id, name: profileName(r.user_id) })); } },
+  };
+
+  async function doReload(scopes){
+    const list = ALL_SCOPES.filter(k=>scopes.has(k));
+    const results = await Promise.all(list.map(k=>LOADERS[k].q()));
+    const err = results.map((r,i)=>(!LOADERS[list[i]].tolerant && r.error) ? r.error : null).find(Boolean);
+    if(err){ appError = err.message; render(); return; }
+    // profiles first: the other mappers look names up in state.profiles
+    const order = list.includes('profiles') ? ['profiles', ...list.filter(k=>k!=='profiles')] : list;
+    order.forEach(k=>{
+      const r = results[list.indexOf(k)];
+      if(r.error && LOADERS[k].tolerant) state.taskShares = [];
+      else LOADERS[k].apply(r.data);
+    });
+    if(scopes.has('tasks') || scopes.has('milestones')) await reconcileMilestones();
+    render();
   }
+
+  // One refresh runs at a time. A request that arrives while one is running is queued
+  // (merged with other queued requests) so the caller always gets data newer than its write.
+  let reloadRunning = null, reloadQueued = null;
+  function reloadData(scopes){
+    const want = new Set(scopes && scopes !== 'all' ? scopes : ALL_SCOPES);
+    if(!reloadRunning){
+      reloadRunning = doReload(want).finally(()=>{ reloadRunning = null; });
+      return reloadRunning;
+    }
+    if(!reloadQueued){
+      const q = { scopes:new Set(), promise:null };
+      reloadQueued = q;
+      q.promise = reloadRunning.then(()=>{
+        reloadQueued = null;
+        reloadRunning = doReload(q.scopes).finally(()=>{ reloadRunning = null; });
+        return reloadRunning;
+      });
+    }
+    want.forEach(k=>reloadQueued.scopes.add(k));
+    return reloadQueued.promise;
+  }
+  function reloadAllData(){ return reloadData('all'); }
 
   let realtimeChannel = null;
   let reloadTimer = null;
-  function scheduleReload(){ clearTimeout(reloadTimer); reloadTimer = setTimeout(reloadAllData, 200); }
+  const pendingScopes = new Set();
+  function scheduleReload(scopes){
+    (scopes === 'all' || !scopes ? ALL_SCOPES : scopes).forEach(k=>pendingScopes.add(k));
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(()=>{ const s = [...pendingScopes]; pendingScopes.clear(); reloadData(s); }, 200);
+  }
+  const RT_TABLES = {
+    tasks:['tasks'], subtasks:['tasks'], audit_log:['audit'], profiles:ALL_SCOPES,
+    projects:['projects'], milestones:['milestones'], units:['units'], task_shares:['shares'],
+    risks:['risks'], blockers:['blockers'], executive_actions:['actions'], project_members:['members'], retrospectives:['retros'],
+  };
   function setupRealtime(){
     if(realtimeChannel) return;
-    realtimeChannel = sb.channel('vector-sync')
-      .on('postgres_changes', {event:'*', schema:'public', table:'tasks'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'subtasks'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'audit_log'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'profiles'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'projects'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'milestones'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'units'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'task_shares'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'risks'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'blockers'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'executive_actions'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'project_members'}, scheduleReload)
-      .on('postgres_changes', {event:'*', schema:'public', table:'retrospectives'}, scheduleReload)
-      .subscribe();
+    let ch = sb.channel('vector-sync');
+    Object.keys(RT_TABLES).forEach(t=>{
+      ch = ch.on('postgres_changes', {event:'*', schema:'public', table:t}, ()=>scheduleReload(RT_TABLES[t]));
+    });
+    realtimeChannel = ch.subscribe();
   }
   function teardownRealtime(){
     if(realtimeChannel){ sb.removeChannel(realtimeChannel); realtimeChannel = null; }
   }
 
-  async function runMutation(promiseFn){
+  async function runMutation(promiseFn, scopes){
     try{
       const { error } = await promiseFn();
       if(error){ appError = error.message; render(); return false; }
     }catch(e){ appError = (e && e.message) || 'Something went wrong.'; render(); return false; }
     appError = null;
-    await reloadAllData();
+    await reloadData(scopes || 'all');
     return true;
   }
 
@@ -888,20 +909,20 @@
 
   async function createTask(title, day, dueDate){
     title = (title||'').trim(); if(!title) return;
-    await runMutation(()=> sb.from('tasks').insert({ title, day, status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId() }));
+    await runMutation(()=> sb.from('tasks').insert({ title, day, status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId() }), ['tasks']);
   }
   async function beginWork(id){
     const t = getTask(id); if(!t || t.status!=='todo') return;
-    await runMutation(()=> sb.from('tasks').update({ status:'progress', timer_running:true, timer_started_at:new Date().toISOString() }).eq('id', id));
+    await runMutation(()=> sb.from('tasks').update({ status:'progress', timer_running:true, timer_started_at:new Date().toISOString() }).eq('id', id), ['tasks']);
   }
   async function markDoneManually(id){
     const t = getTask(id); if(!t || t.status==='done') return;
     const elapsed = computeElapsed(t);
     if(openTaskId===id) openTaskId=null;
-    await runMutation(()=> sb.from('tasks').update({ status:'done', completed_at:new Date().toISOString(), completed_by: currentUserId(), timer_running:false, timer_started_at:null, timer_elapsed_ms:elapsed }).eq('id', id));
+    await runMutation(()=> sb.from('tasks').update({ status:'done', completed_at:new Date().toISOString(), completed_by: currentUserId(), timer_running:false, timer_started_at:null, timer_elapsed_ms:elapsed }).eq('id', id), ['tasks']);
   }
   async function setPriority(id, p){
-    await runMutation(()=> sb.from('tasks').update({priority:p}).eq('id', id));
+    await runMutation(()=> sb.from('tasks').update({priority:p}).eq('id', id), ['tasks']);
   }
   async function deleteTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
@@ -915,7 +936,7 @@
     if(updErr){ appError=updErr.message; render(); return; }
     await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'delete', reason, user_id: currentUserId() });
     appError = null;
-    await reloadAllData();
+    await reloadData(['tasks','audit']);
   }
   async function restoreTaskWithLog(id, reason, username){
     const t = state.trash.find(x=>x.id===id); if(!t) return;
@@ -926,7 +947,7 @@
     if(updErr){ appError=updErr.message; render(); return; }
     await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'restore', reason, user_id: currentUserId() });
     appError = null;
-    await reloadAllData();
+    await reloadData(['tasks','audit']);
   }
   async function reopenTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
@@ -934,7 +955,7 @@
     if(error){ appError=error.message; render(); return; }
     await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'reopen', reason, user_id: currentUserId() });
     appError = null;
-    await reloadAllData();
+    await reloadData(['tasks','audit']);
   }
   async function resumeTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
@@ -943,7 +964,7 @@
     if(error){ appError=error.message; render(); return; }
     await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'resume', reason, user_id: currentUserId() });
     appError = null;
-    await reloadAllData();
+    await reloadData(['tasks','audit']);
   }
   async function suspendTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
@@ -952,7 +973,7 @@
     if(error){ appError=error.message; render(); return; }
     await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'suspend', reason, user_id: currentUserId() });
     appError = null;
-    await reloadAllData();
+    await reloadData(['tasks','audit']);
   }
 
   let notesSaveTimer = null;
@@ -965,7 +986,7 @@
   }
   async function updateTitle(id, title){
     if(!title || !title.trim()) return;
-    await runMutation(()=> sb.from('tasks').update({title: title.trim()}).eq('id', id));
+    await runMutation(()=> sb.from('tasks').update({title: title.trim()}).eq('id', id), ['tasks']);
   }
   async function addSubtask(id, text){
     text=(text||'').trim(); if(!text) return;
@@ -974,29 +995,29 @@
     const { error } = await sb.from('subtasks').insert({ task_id:id, text, done:false, position: t.subtasks.length });
     if(error){ appError=error.message; render(); return; }
     appError = null;
-    await reloadAllData();
+    await reloadData(['tasks']);
   }
   async function toggleSubtask(taskId, subId){
     const t=getTask(taskId); if(!t) return;
     const s=t.subtasks.find(s=>s.id===subId); if(!s) return;
     const { error } = await sb.from('subtasks').update({done: !s.done}).eq('id', subId);
     if(error){ appError=error.message; render(); return; }
-    await reloadAllData();
+    await reloadData(['tasks']);
     const freshT = getTask(taskId);
     if(freshT){
       const allDone = freshT.subtasks.length>0 && freshT.subtasks.every(s=>s.done);
       if(allDone && freshT.status!=='done'){
         if(openTaskId===taskId) openTaskId=null;
         await sb.from('tasks').update({status:'done', completed_at:new Date().toISOString(), completed_by: currentUserId(), timer_running:false, timer_elapsed_ms: computeElapsed(freshT)}).eq('id', taskId);
-        await reloadAllData();
+        await reloadData(['tasks']);
       } else if(!allDone && freshT.status==='done'){
         await sb.from('tasks').update({status:'progress', completed_at:null, completed_by:null, timer_running:true, timer_started_at:new Date().toISOString()}).eq('id', taskId);
-        await reloadAllData();
+        await reloadData(['tasks']);
       }
     }
   }
   async function deleteSubtask(taskId, subId){
-    await runMutation(()=> sb.from('subtasks').delete().eq('id', subId));
+    await runMutation(()=> sb.from('subtasks').delete().eq('id', subId), ['tasks']);
   }
   function startEditSubtask(key){ editingSubtaskKey = key; render(); }
   async function commitEditSubtask(taskId, subId, value){
@@ -1004,7 +1025,7 @@
     editingSubtaskKey = null;
     if(!val){ render(); return; }
     focusSubtaskInput = true;
-    await runMutation(()=> sb.from('subtasks').update({text:val}).eq('id', subId));
+    await runMutation(()=> sb.from('subtasks').update({text:val}).eq('id', subId), ['tasks']);
   }
 
   /* ---------------- Scope: All / Mine / Unit ---------------- */
@@ -1041,10 +1062,10 @@
   function canManageShares(t){ return t.createdByUserId===currentUserId() || canReviewMilestones(); }
   async function shareTask(taskId, userId){
     if(!userId) return;
-    await runMutation(()=> sb.from('task_shares').insert({ task_id: taskId, user_id: userId, added_by: currentUserId() }));
+    await runMutation(()=> sb.from('task_shares').insert({ task_id: taskId, user_id: userId, added_by: currentUserId() }), ['shares']);
   }
   async function unshareTask(shareId){
-    await runMutation(()=> sb.from('task_shares').delete().eq('id', shareId));
+    await runMutation(()=> sb.from('task_shares').delete().eq('id', shareId), ['shares']);
   }
 
   /* ---------------- Streak math (personal, per logged-in user) ---------------- */
@@ -1264,10 +1285,10 @@
   }
   async function createTaskForMilestone(milestoneId, title, dueDate){
     title = (title||'').trim(); if(!title) return;
-    await runMutation(()=> sb.from('tasks').insert({ title, day: todayStr(), status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId(), milestone_id: milestoneId }));
+    await runMutation(()=> sb.from('tasks').insert({ title, day: todayStr(), status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId(), milestone_id: milestoneId }), ['tasks']);
   }
   async function setTaskMilestone(taskId, milestoneId){
-    await runMutation(()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId));
+    await runMutation(()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId), ['tasks']);
   }
   /* ---------------- Executive health scoring ---------------- */
   function isTaskOverdue(t){ return !!(t.dueDate && t.status!=='done' && t.dueDate < todayStr()); }
@@ -1331,10 +1352,10 @@
   }
   async function addProjectMember(pid, userId){
     if(!userId) return;
-    await runMutation(()=> sb.from('project_members').insert({ project_id:pid, user_id:userId, added_by: currentUserId() }));
+    await runMutation(()=> sb.from('project_members').insert({ project_id:pid, user_id:userId, added_by: currentUserId() }), ['members']);
   }
   async function removeProjectMember(id){
-    await runMutation(()=> sb.from('project_members').delete().eq('id', id));
+    await runMutation(()=> sb.from('project_members').delete().eq('id', id), ['members']);
   }
   async function saveMyRetro(pid, weekStart, vals){
     await runMutation(()=> sb.from('retrospectives').upsert({
