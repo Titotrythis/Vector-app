@@ -907,9 +907,45 @@
   /* ---------------- Task ops (Supabase-backed) ---------------- */
   function getTask(id){ return state.tasks.find(t=>t.id===id); }
 
+  /* Instant updates: show the change on screen now, save in the background.
+     If the save fails, the screen goes back to how it was and the error is shown. */
+  async function optimistic(apply, write, scopes){
+    const snap = { tasks:state.tasks, trash:state.trash, auditLog:state.auditLog };
+    state.tasks = state.tasks.slice(); state.trash = state.trash.slice(); state.auditLog = state.auditLog.slice();
+    apply(); render();
+    let res;
+    try{ res = await write(); }catch(e){ res = { error:e }; }
+    if(res && res.error){
+      state.tasks = snap.tasks; state.trash = snap.trash; state.auditLog = snap.auditLog;
+      appError = "Couldn't save that, so it was undone. " + ((res.error && res.error.message) || '');
+      render();
+      reloadData(scopes);
+      return false;
+    }
+    appError = null;
+    await reloadData(scopes);
+    return true;
+  }
+  function newTempTask(fields){
+    return taskFromRow(Object.assign({ id:'tmp-'+Math.random().toString(36).slice(2), status:'todo', notes:'', priority:'low', subtasks:[],
+      created_by: currentUserId(), created_at:new Date().toISOString(), milestone_id:null, deleted:false }, fields));
+  }
+  function patchTask(id, patch){ state.tasks = state.tasks.map(t=>t.id===id ? Object.assign({}, t, patch) : t); }
+  // Insert a task; swap the temporary card for the real row as soon as the server answers
+  function createTaskInstant(fields){
+    const temp = newTempTask(fields);
+    return optimistic(
+      ()=>{ state.tasks.push(temp); },
+      async ()=>{
+        const res = await sb.from('tasks').insert(Object.assign({ status:'todo', notes:'', priority:'low', created_by: currentUserId() }, fields)).select().single();
+        if(!res.error && res.data){ state.tasks = state.tasks.map(t=>t.id===temp.id ? taskFromRow(Object.assign({subtasks:[]}, res.data)) : t); render(); }
+        return res;
+      }, ['tasks']);
+  }
+
   async function createTask(title, day, dueDate){
     title = (title||'').trim(); if(!title) return;
-    await runMutation(()=> sb.from('tasks').insert({ title, day, status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId() }), ['tasks']);
+    await createTaskInstant({ title, day, due_date: dueDate||null });
   }
   async function beginWork(id){
     const t = getTask(id); if(!t || t.status!=='todo') return;
@@ -922,32 +958,43 @@
     await runMutation(()=> sb.from('tasks').update({ status:'done', completed_at:new Date().toISOString(), completed_by: currentUserId(), timer_running:false, timer_started_at:null, timer_elapsed_ms:elapsed }).eq('id', id), ['tasks']);
   }
   async function setPriority(id, p){
-    await runMutation(()=> sb.from('tasks').update({priority:p}).eq('id', id), ['tasks']);
+    await optimistic(()=>patchTask(id,{priority:p}), ()=> sb.from('tasks').update({priority:p}).eq('id', id), ['tasks']);
   }
   async function deleteTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
     const elapsedFinal = computeElapsed(t);
     const suspendedMsFinal = t.status==='suspended' ? computeSuspendedElapsed(t) : t.suspendedMs;
-    const { error: updErr } = await sb.from('tasks').update({
-      deleted:true, deleted_at:new Date().toISOString(), deleted_by: currentUserId(), delete_reason: reason,
-      timer_running:false, timer_started_at:null, timer_elapsed_ms: elapsedFinal,
-      suspended_ms: suspendedMsFinal, suspend_started_at:null,
-    }).eq('id', id);
-    if(updErr){ appError=updErr.message; render(); return; }
-    await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'delete', reason, user_id: currentUserId() });
-    appError = null;
-    await reloadData(['tasks','audit']);
+    const nowIso = new Date().toISOString();
+    await optimistic(()=>{
+      state.tasks = state.tasks.filter(x=>x.id!==id);
+      state.trash.push(Object.assign({}, t, { timer:{elapsed:elapsedFinal, running:false, startedAt:null}, suspendedMs:suspendedMsFinal, suspendStartedAt:null,
+        deletedAt:nowIso, deletedBy:currentUserName(), deleteReason:reason }));
+      state.auditLog.push({ id:'tmp-'+id, taskId:id, taskTitle:t.title, action:'delete', reason, userId:currentUserId(), username:currentUserName(), timestamp:nowIso });
+    }, async ()=>{
+      const res = await sb.from('tasks').update({
+        deleted:true, deleted_at:nowIso, deleted_by: currentUserId(), delete_reason: reason,
+        timer_running:false, timer_started_at:null, timer_elapsed_ms: elapsedFinal,
+        suspended_ms: suspendedMsFinal, suspend_started_at:null,
+      }).eq('id', id);
+      if(!res.error) await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'delete', reason, user_id: currentUserId() });
+      return res;
+    }, ['tasks','audit']);
   }
   async function restoreTaskWithLog(id, reason, username){
     const t = state.trash.find(x=>x.id===id); if(!t) return;
-    const { error: updErr } = await sb.from('tasks').update({
-      deleted:false, deleted_at:null, deleted_by:null, delete_reason:null,
-      status:'todo', completed_at:null, timer_running:false, timer_started_at:null,
-    }).eq('id', id);
-    if(updErr){ appError=updErr.message; render(); return; }
-    await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'restore', reason, user_id: currentUserId() });
-    appError = null;
-    await reloadData(['tasks','audit']);
+    const nowIso = new Date().toISOString();
+    await optimistic(()=>{
+      state.trash = state.trash.filter(x=>x.id!==id);
+      state.tasks.push(Object.assign({}, t, { status:'todo', completedAt:null, timer:{elapsed:t.timer.elapsed, running:false, startedAt:null}, deletedAt:null, deletedBy:'', deleteReason:null }));
+      state.auditLog.push({ id:'tmp-r'+id, taskId:id, taskTitle:t.title, action:'restore', reason, userId:currentUserId(), username:currentUserName(), timestamp:nowIso });
+    }, async ()=>{
+      const res = await sb.from('tasks').update({
+        deleted:false, deleted_at:null, deleted_by:null, delete_reason:null,
+        status:'todo', completed_at:null, timer_running:false, timer_started_at:null,
+      }).eq('id', id);
+      if(!res.error) await sb.from('audit_log').insert({ task_id:id, task_title:t.title, action:'restore', reason, user_id: currentUserId() });
+      return res;
+    }, ['tasks','audit']);
   }
   async function reopenTaskWithLog(id, reason, username){
     const t = getTask(id); if(!t) return;
@@ -1285,10 +1332,10 @@
   }
   async function createTaskForMilestone(milestoneId, title, dueDate){
     title = (title||'').trim(); if(!title) return;
-    await runMutation(()=> sb.from('tasks').insert({ title, day: todayStr(), status:'todo', notes:'', priority:'low', due_date: dueDate||null, created_by: currentUserId(), milestone_id: milestoneId }), ['tasks']);
+    await createTaskInstant({ title, day: todayStr(), due_date: dueDate||null, milestone_id: milestoneId });
   }
   async function setTaskMilestone(taskId, milestoneId){
-    await runMutation(()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId), ['tasks']);
+    await optimistic(()=>patchTask(taskId,{milestoneId: milestoneId||null}), ()=> sb.from('tasks').update({ milestone_id: milestoneId || null }).eq('id', taskId), ['tasks']);
   }
   /* ---------------- Executive health scoring ---------------- */
   function isTaskOverdue(t){ return !!(t.dueDate && t.status!=='done' && t.dueDate < todayStr()); }
