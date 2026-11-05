@@ -1,0 +1,68 @@
+# Keeps the free Supabase project from being paused for inactivity, and keeps
+# this repo "active" so GitHub does not switch this schedule off.
+#
+# Needs two repository secrets (Settings > Secrets and variables > Actions):
+#   SUPABASE_URL        e.g. https://xxxx.supabase.co
+#   SUPABASE_ANON_KEY   the same public anon key used in index.html
+#
+# Runs every 2 days. Run it by hand any time from the Actions tab.
+name: Keepalive
+
+on:
+  schedule:
+    - cron: '17 5 */2 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Supabase (runs a real query through vector_ping)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
+            echo "::error::SUPABASE_URL and SUPABASE_ANON_KEY secrets are not set"; exit 1
+          fi
+          body=$(curl --silent --show-error --fail --max-time 30 --retry 3 --retry-delay 5 \
+            -X POST "${SUPABASE_URL%/}/rest/v1/rpc/vector_ping" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "Response: $body"
+          [ "$body" = "true" ] || { echo "::error::Unexpected ping response"; exit 1; }
+
+  keepalive-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: ping
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Commit once the last keepalive is over 30 days old
+        run: |
+          set -euo pipefail
+          last=$(git log -1 --format=%ct -- .github/keepalive.txt || true)
+          now=$(date +%s)
+          if [ -n "$last" ] && [ $(( now - last )) -lt $(( 30 * 86400 )) ]; then
+            echo "Last keepalive commit is recent, nothing to do."; exit 0
+          fi
+          date -u +"Last keepalive: %Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          git commit -m "chore: keepalive (keeps scheduled jobs enabled)"
+          git push
