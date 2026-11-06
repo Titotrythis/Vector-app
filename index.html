@@ -932,7 +932,7 @@
 
   /* ---------------- Priority helpers ---------------- */
   function priorityColor(p){ return p==='low'?'var(--pri-low)': p==='high'?'var(--pri-high)': p==='veryhigh'?'var(--pri-veryhigh)': p==='urgent'?'var(--pri-urgent)':'var(--pri-low)'; }
-  function priorityLabel(p){ return p==='low'?'Low': p==='high'?'High': p==='veryhigh'?'Very High': p==='urgent'?'Urgent':'Low'; }
+  function priorityLabel(p){ return p==='low'?'Low': p==='high'?'Medium': p==='veryhigh'?'High': p==='urgent'?'Urgent':'Low'; }
   function priorityRank(p){ return p==='urgent'?4: p==='veryhigh'?3: p==='high'?2: 1; }
   function sortByPriority(list){ return list.slice().sort((a,b)=>priorityRank(b.priority)-priorityRank(a.priority)); }
 
