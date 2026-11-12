@@ -387,6 +387,7 @@
   .att-tile{display:flex;align-items:flex-start;gap:10px;background:var(--surface-alt);border-radius:10px;padding:10px;min-width:0;}
   .att-ico{flex:none;border-radius:6px;position:relative;overflow:hidden;display:flex;align-items:flex-end;justify-content:center;font-size:9.5px;font-weight:700;}
   .att-ico.pdf{width:30px;height:36px;background:#B23B2E;color:#fff;padding-bottom:4px;border-radius:5px;}
+  .att-ico.word{width:30px;height:36px;background:#2B579A;color:#fff;padding-bottom:4px;border-radius:5px;}
   .att-ico.img{width:36px;height:36px;background:#E6DFCF;}
   .att-ico.img img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
   .att-ico.img span{position:absolute;right:2px;bottom:2px;background:rgba(35,37,43,.72);color:#fff;font-size:8px;border-radius:3px;padding:1px 3px;}
@@ -1151,7 +1152,8 @@
   const ATT_BUCKET = 'task-attachments';
   const ATT_MAX_BYTES = 10 * 1024 * 1024;
   const ATT_MAX_COUNT = 10;
-  const ATT_TYPES = { 'application/pdf':{ext:'pdf', label:'PDF'}, 'image/png':{ext:'png', label:'PNG'}, 'image/jpeg':{ext:'jpg', label:'JPG'} };
+  const ATT_TYPES = { 'application/pdf':{ext:'pdf', label:'PDF'}, 'image/png':{ext:'png', label:'PNG'}, 'image/jpeg':{ext:'jpg', label:'JPG'}, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':{ext:'docx', label:'DOCX'} };
+  const ATT_DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   let attachmentsReady = false;   // false until the table exists (SQL run), so the section stays hidden
   let attBusy = {};               // task id -> uploads in progress
   let attMessages = {};           // task id -> messages shown under the list
@@ -1187,6 +1189,11 @@
     if(b[0]===0x25 && b[1]===0x50 && b[2]===0x44 && b[3]===0x46 && b[4]===0x2D) return 'application/pdf';
     if(b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47 && b[4]===0x0D && b[5]===0x0A && b[6]===0x1A && b[7]===0x0A) return 'image/png';
     if(b[0]===0xFF && b[1]===0xD8 && b[2]===0xFF) return 'image/jpeg';
+    // .docx is a zip file: it must hold a Word document part and no macro project
+    if(b[0]===0x50 && b[1]===0x4B && b[2]===0x03 && b[3]===0x04 && /\.docx$/i.test(file.name)){
+      const text = new TextDecoder('latin1').decode(await file.arrayBuffer());
+      if(text.includes('word/document.xml') && !/vbaProject|macroEnabled/i.test(text)) return ATT_DOCX;
+    }
     return null;
   }
   function newFileId(){
@@ -1207,7 +1214,7 @@
       if(f.size===0){ msgs.push(`${shown} is empty and was not added.`); continue; }
       if(f.size > ATT_MAX_BYTES){ msgs.push(`${shown} is ${fmtBytes(f.size)}. The limit is 10 MB per file.`); continue; }
       const mime = await sniffFileType(f);
-      if(!mime || !/\.(pdf|png|jpe?g)$/i.test(f.name)){ msgs.push(`${shown} was not added. Only PDF, PNG and JPEG files are accepted.`); continue; }
+      if(!mime || !/\.(pdf|png|jpe?g|docx)$/i.test(f.name)){ msgs.push(`${shown} was not added. Only PDF, PNG, JPEG and Word (.docx) files are accepted.`); continue; }
       if(good.length >= room){ msgs.push(`${shown} was not added. A card can hold ${ATT_MAX_COUNT} files.`); continue; }
       good.push({ file:f, mime });
     }
@@ -1234,7 +1241,7 @@
     const a = state.attachments.find(x=>x.id===id);
     if(!a) return;
     const w = window.open('about:blank', '_blank');   // opened first so pop-up blockers allow it
-    const { data, error } = await sb.storage.from(ATT_BUCKET).createSignedUrl(a.path, 60);
+    const { data, error } = await sb.storage.from(ATT_BUCKET).createSignedUrl(a.path, 60, a.mimeType===ATT_DOCX ? { download: cleanFileName(a.fileName) } : undefined);
     if(error || !data || !data.signedUrl){
       if(w) w.close();
       attMessages[a.taskId] = [`${cleanFileName(a.fileName)} could not be opened right now.`];
@@ -1258,7 +1265,7 @@
   // Previews for image attachments use short-lived private links, fetched once per hour.
   async function ensureAttachmentThumbs(){
     if(!openTaskId || attThumbLoading) return;
-    const imgs = attachmentsForTask(openTaskId).filter(a=>a.mimeType!=='application/pdf');
+    const imgs = attachmentsForTask(openTaskId).filter(a=>a.mimeType.startsWith('image/'));
     const now = Date.now();
     const need = imgs.filter(a=>!attThumbs[a.id] || attThumbs[a.id].exp < now + 60000);
     if(need.length){
@@ -1279,11 +1286,11 @@
     });
   }
   function renderAttTile(t, a){
-    const isImg = a.mimeType !== 'application/pdf';
+    const isImg = a.mimeType.startsWith('image/');
     const th = attThumbs[a.id];
     const icon = isImg
       ? `<div class="att-ico img"><img alt="" data-att-thumb="${escapeAttr(a.id)}" ${th && th.exp>Date.now() ? `src="${escapeAttr(th.url)}"` : ''}><span>${ATT_TYPES[a.mimeType] ? ATT_TYPES[a.mimeType].label : 'IMG'}</span></div>`
-      : `<div class="att-ico pdf" aria-hidden="true">PDF</div>`;
+      : a.mimeType===ATT_DOCX ? `<div class="att-ico word" aria-hidden="true">DOC</div>` : `<div class="att-ico pdf" aria-hidden="true">PDF</div>`;
     const who = profileName(a.uploadedBy) || 'Unknown';
     const date = a.createdAt ? new Date(a.createdAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'}) : '';
     const name = escapeHtml(cleanFileName(a.fileName));
@@ -1317,8 +1324,8 @@
           ? `<button type="button" class="att-add" disabled>Limit reached (${ATT_MAX_COUNT} of ${ATT_MAX_COUNT})</button><div class="att-hint">Remove a file to add another.</div>`
           : `<div data-att-drop="${t.id}">
                <button type="button" class="att-add" data-att-pick="${t.id}">+ Add file</button>
-               <input type="file" hidden multiple accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg" data-att-input="${t.id}">
-               <div class="att-hint">Drag files here or choose files &middot; PDF, PNG or JPEG &middot; up to 10 MB each &middot; ${used} of ${ATT_MAX_COUNT} used</div>
+               <input type="file" hidden multiple accept="application/pdf,image/png,image/jpeg,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,.png,.jpg,.jpeg,.docx" data-att-input="${t.id}">
+               <div class="att-hint">Drag files here or choose files &middot; PDF, PNG, JPEG or Word (.docx) &middot; up to 10 MB each &middot; ${used} of ${ATT_MAX_COUNT} used</div>
              </div>`)
           : `${used===0 ? `<div class="att-hint" style="margin-top:0;">No attachments.</div>` : ''}<div class="att-note">${taskArchived(t) ? 'This project is archived, so attachments can be opened but not added or removed.' : 'Only the card&rsquo;s creator, people it is shared with, or a Journey Architect can add or remove files.'}</div>`}
   `;
